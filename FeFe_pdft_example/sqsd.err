@@ -1,0 +1,2 @@
+/project/lgagliardi/qjwang/2025_q1/diIron_exp/diIron_tol_pdft/sqdpdft.py:3: FutureWarning: Most MC-PDFT and MC-DCFT modules have been moved to pyscf-forge (github.com/pyscf/pyscf-forge) and will be removed from mrh soon.
+  from mrh.my_pyscf.mcpdft.laspdft import get_mcpdft_child_class
