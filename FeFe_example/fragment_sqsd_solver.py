@@ -1,13 +1,70 @@
 import numpy as np
 from pathlib import Path
-from pyscf import gto
+from pyscf import fci, gto
 from qiskit_addon_sqd.configuration_recovery import recover_configurations
 from qiskit_addon_sqd.counts import counts_to_arrays
-from qiskit_addon_sqd.fermion import bitstring_matrix_to_ci_strs, solve_sci
+from qiskit_addon_sqd.fermion import (
+    SCIResult,
+    SCIState,
+    bitstring_matrix_to_ci_strs,
+    solve_sci,
+)
 from qiskit_addon_sqd.subsampling import postselect_by_hamming_right_and_left, subsample
 
 # from LUCJ_sampler import LUCJ_Sampler
 from scipy import linalg as LA
+
+
+def solve_sci_nroots(
+    ci_strings,
+    hcore: np.ndarray,
+    eri: np.ndarray,
+    norb: int,
+    nelec: tuple[int, int],
+    *,
+    spin_sq: float | None = None,
+    nroots: int | None = None,
+    **kwargs,
+) -> SCIResult:
+    """``qiskit_addon_sqd.fermion.solve_sci`` with an optional ``nroots``.
+
+    The addon's own solvers only handle a single Davidson root -- their RDM
+    post-processing assumes one SCIvector, not a list. When ``nroots`` is given
+    we therefore call pyscf directly and repackage the lowest root into the
+    addon's :class:`SCIResult` / :class:`SCIState` types, so the rest of the
+    loop is unchanged. ``nroots=None`` delegates straight to the addon.
+    """
+    if nroots is None:
+        return solve_sci(ci_strings, hcore, eri, norb, nelec, spin_sq=spin_sq, **kwargs)
+
+    myci = fci.selected_ci.SelectedCI()
+    if spin_sq is not None:
+        myci = fci.addons.fix_spin_(myci, ss=spin_sq)
+    _, sci_vecs = fci.selected_ci.kernel_fixed_space(
+        myci, hcore, eri, norb, nelec, ci_strs=ci_strings, nroots=nroots, **kwargs
+    )
+    sci_vec = sci_vecs[0]
+
+    # Energy from the RDMs, matching what solve_sci does.
+    dm1s = myci.make_rdm1s(sci_vec, norb, nelec)
+    dm1 = myci.make_rdm1(sci_vec, norb, nelec)
+    dm2 = myci.make_rdm2(sci_vec, norb, nelec)
+    energy = np.einsum("pr,pr->", dm1, hcore) + 0.5 * np.einsum("prqs,prqs->", dm2, eri)
+
+    sci_state = SCIState(
+        amplitudes=np.array(sci_vec),
+        ci_strs_a=sci_vec._strs[0],
+        ci_strs_b=sci_vec._strs[1],
+        norb=norb,
+        nelec=nelec,
+    )
+    return SCIResult(
+        energy,
+        sci_state,
+        orbital_occupancies=(np.diagonal(dm1s[0]), np.diagonal(dm1s[1])),
+        rdm1=dm1,
+        rdm2=dm2,
+    )
 
 
 def sqsd_fragment(
@@ -23,6 +80,7 @@ def sqsd_fragment(
     max_davidson_cycles: int,
     results: dict,
     counter: int,
+    nroots: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """convert las h1, h2 to mo basis"""
     mol = gto.M()
@@ -178,13 +236,14 @@ def sqsd_fragment(
             int_a[j] = len(addresses[0])
             int_b[j] = len(addresses[1])
             print("after d", len(addresses[0]), len(addresses[1]))
-            result = solve_sci(
+            result = solve_sci_nroots(
                 addresses,
                 h1e_MO,
                 h2e_MO,
                 num_orbitals,
                 (num_elec_a, num_elec_b),
                 spin_sq=spin_sq,
+                nroots=nroots,
                 max_cycle=max_davidson_cycles,
                 tol=1e-16,
             )
@@ -200,8 +259,8 @@ def sqsd_fragment(
             int_s[j] = spin
             print("SQD energy,", energy_sci)
             print("spin", spin)
-            int_occs[j, :num_orbitals] = avg_occs[1]
-            int_occs[j, num_orbitals:] = avg_occs[0]
+            int_occs[j, :num_orbitals] = avg_occs[0]
+            int_occs[j, num_orbitals:] = avg_occs[1]
             cs.append(coeffs_sci)
             dm1_mo_list.append(dm1_MO)
             dm2_mo_list.append(dm2_MO)
@@ -235,11 +294,8 @@ def sqsd_fragment(
             f"\t\tCarrying over unique alpha {len(np.unique(carryover_strings[0]))} beta {len(np.unique(carryover_strings[1]))} strings."
         )
 
-        # int_occs stores (spin-down | spin-up); recover_configurations wants (up, down).
-        avg_occupancies = (
-            avg_occupancy[num_orbitals:],
-            avg_occupancy[:num_orbitals],
-        )
+        # int_occs stores (spin-up | spin-down); recover_configurations wants (up, down).
+        avg_occupancies = (avg_occupancy[:num_orbitals], avg_occupancy[num_orbitals:])
         # Track optimization history
         e_hist[i, :] = int_e
         s_hist[i, :] = int_s
