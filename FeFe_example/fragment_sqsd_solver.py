@@ -1,11 +1,10 @@
 import numpy as np
 from pathlib import Path
 from pyscf import gto
-from sqsd.configuration_recovery import recover_configurations
-from sqsd.qsci import solve_pyscf2
-from sqsd.subsampling import postselect_and_subsample
-from sqsd.utils import bitstring_matrix_to_sorted_addresses, flip_orbital_occupancies
-from sqsd.utils.counts import counts_to_arrays
+from qiskit_addon_sqd.configuration_recovery import recover_configurations
+from qiskit_addon_sqd.counts import counts_to_arrays
+from qiskit_addon_sqd.fermion import bitstring_matrix_to_ci_strs, solve_sci
+from qiskit_addon_sqd.subsampling import postselect_by_hamming_right_and_left, subsample
 
 # from LUCJ_sampler import LUCJ_Sampler
 from scipy import linalg as LA
@@ -61,7 +60,10 @@ def sqsd_fragment(
             prev_mo = np.load(f"frag1_mo_{counter - 2}.npy")
     """carryover pt2"""
     carryover_threshold = 1e-3
-    carryover_strings = [[], []]
+    carryover_strings = [
+        np.array([], dtype=np.int64),
+        np.array([], dtype=np.int64),
+    ]
     open_shell = True
 
     def bitstrings_from_indices(indices, norb):
@@ -101,11 +103,10 @@ def sqsd_fragment(
         beta_rotated = beta_bitstrings[:, ::-1][:, rho][:, ::-1]
         full_spinorb_bits = np.hstack([beta_rotated, alpha_rotated])
         # 4. convert back to strings
-        fullco = bitstring_matrix_to_sorted_addresses(
+        # bitstring_matrix_to_ci_strs returns (right half, left half) == (alpha, beta)
+        carryover_strings[0], carryover_strings[1] = bitstring_matrix_to_ci_strs(
             full_spinorb_bits, open_shell=open_shell
         )
-        carryover_strings[0] = fullco[1]
-        carryover_strings[1] = fullco[0]
 
     """Perform SQSD."""
     # Self-consistent configuration recovery loop
@@ -115,12 +116,12 @@ def sqsd_fragment(
     a_hist = np.zeros((iterations, n_batches))
     b_hist = np.zeros((iterations, n_batches))
     occupancy_hist = np.zeros((iterations, 2 * num_orbitals))
-    occupancies_bitwise = None  # orbital i corresponds to column i in bitstring matrix
+    avg_occupancies = None  # (spin-up, spin-down) mean orbital occupancies
     rand_seed = None
 
     for i in range(iterations):
         print(f"Starting configuration recovery iteration {i}")
-        if occupancies_bitwise is None:
+        if avg_occupancies is None:
             counts_dict = results
             bitstring_matrix_full, probs_arr_full = counts_to_arrays(counts_dict)
             bs_mat_tmp = bitstring_matrix_full
@@ -129,18 +130,22 @@ def sqsd_fragment(
             bs_mat_tmp, probs_arr_tmp = recover_configurations(
                 bitstring_matrix_full,
                 probs_arr_full,
-                occupancies_bitwise,
-                num_elec_b,
+                avg_occupancies,
                 num_elec_a,
+                num_elec_b,
                 rand_seed=rand_seed,
             )
 
         # Throw out samples with incorrect hamming weight and create batches of subsamples.
-        batches = postselect_and_subsample(
+        bs_mat_postsel, probs_arr_postsel = postselect_by_hamming_right_and_left(
             bs_mat_tmp,
             probs_arr_tmp,
-            num_elec_b,
-            num_elec_a,
+            hamming_right=num_elec_a,
+            hamming_left=num_elec_b,
+        )
+        batches = subsample(
+            bs_mat_postsel,
+            probs_arr_postsel,
             samples_per_batch,
             n_batches,
             rand_seed=rand_seed,
@@ -162,34 +167,33 @@ def sqsd_fragment(
         lowest_energy_index = -1
         for j in range(n_batches):
             print("current batch,", j)
-            addresses = bitstring_matrix_to_sorted_addresses(
+            addresses_a, addresses_b = bitstring_matrix_to_ci_strs(
                 batches[j], open_shell=open_shell
             )
-            addresses = addresses[::-1]
-            print("addresses before", addresses)
-            addresses_a, addresses_b = addresses
-            addresses_a = set(addresses_a)
-            addresses_b = set(addresses_b)
-            addresses_a.update(carryover_strings[0])
-            addresses_b.update(carryover_strings[1])
-            addresses_a = sorted(addresses_a)
-            addresses_b = sorted(addresses_b)
+            print("addresses before", (addresses_a, addresses_b))
+            addresses_a = np.union1d(addresses_a, carryover_strings[0])
+            addresses_b = np.union1d(addresses_b, carryover_strings[1])
             addresses = (addresses_a, addresses_b)
             int_d[j] = len(addresses[0]) * len(addresses[1])
             int_a[j] = len(addresses[0])
             int_b[j] = len(addresses[1])
             print("after d", len(addresses[0]), len(addresses[1]))
-            energy_sci, coeffs_sci, avg_occs, spin, dm1_MO, dm2_MO = solve_pyscf2(
+            result = solve_sci(
                 addresses,
                 h1e_MO,
                 h2e_MO,
-                num_elec_a,
-                num_elec_b,
+                num_orbitals,
+                (num_elec_a, num_elec_b),
                 spin_sq=spin_sq,
-                max_davidson=max_davidson_cycles,
+                max_cycle=max_davidson_cycles,
                 tol=1e-16,
-                nroots=10,
             )
+            energy_sci = result.energy
+            coeffs_sci = result.sci_state
+            avg_occs = result.orbital_occupancies
+            spin = result.sci_state.spin_square()
+            dm1_MO = result.sci_state.rdm(rank=1, spin_summed=False)
+            dm2_MO = result.rdm2
             # energy_sci += e_core
             # nuclear_repulsion_energy
             int_e[j] = energy_sci
@@ -206,23 +210,22 @@ def sqsd_fragment(
                 lowest_energy_index = j
         # Combine batch results
         avg_occupancy = np.mean(int_occs, axis=0)
-        # The occupancies from the solver should be flipped to match the bits in the bitstring matrix.
         print(f"\t\tIteration {i} SCI energies: {int_e}")
         lowest_index = np.argmin(int_e)
         print(f"\t\tLowest energy for this batch: {int_e[lowest_index]}.")
-        sci_vec = cs[lowest_index]
+        sci_state = cs[lowest_index]
         filepath = data_dir / "sci_vec"
-        np.save(filepath, sci_vec)
+        sci_state.save(filepath)
         print(f"\t\tSCI vec saved to {filepath}.")
-        flattened = np.array(sci_vec).reshape(-1)
+        flattened = sci_state.amplitudes.reshape(-1)
         indices = np.argsort(np.abs(flattened))
         index = np.searchsorted(np.abs(flattened), carryover_threshold, sorter=indices)
         carryover_indices = indices[index:]
         alpha_indices, beta_indices = np.divmod(
-            carryover_indices, np.array(sci_vec).shape[1]
+            carryover_indices, sci_state.amplitudes.shape[1]
         )
-        alpha_strings = sci_vec._strs[0][alpha_indices]
-        beta_strings = sci_vec._strs[1][beta_indices]
+        alpha_strings = sci_state.ci_strs_a[alpha_indices]
+        beta_strings = sci_state.ci_strs_b[beta_indices]
         carryover_strings[0] = alpha_strings
         carryover_strings[1] = beta_strings
         print(
@@ -232,7 +235,11 @@ def sqsd_fragment(
             f"\t\tCarrying over unique alpha {len(np.unique(carryover_strings[0]))} beta {len(np.unique(carryover_strings[1]))} strings."
         )
 
-        occupancies_bitwise = flip_orbital_occupancies(avg_occupancy)
+        # int_occs stores (spin-down | spin-up); recover_configurations wants (up, down).
+        avg_occupancies = (
+            avg_occupancy[num_orbitals:],
+            avg_occupancy[:num_orbitals],
+        )
         # Track optimization history
         e_hist[i, :] = int_e
         s_hist[i, :] = int_s

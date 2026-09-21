@@ -1,11 +1,9 @@
 import numpy as np
 from pyscf import ao2mo, tools,gto
-from sqsd.configuration_recovery import recover_configurations
-from sqsd.qsci import solve_pyscf2
-from sqsd.subsampling import postselect_and_subsample
-from sqsd.utils import bitstring_matrix_to_sorted_addresses, flip_orbital_occupancies
-from sqsd.utils.counts import counts_to_arrays
-from sqsd.utils.counts import generate_counts_uniform
+from qiskit_addon_sqd.configuration_recovery import recover_configurations
+from qiskit_addon_sqd.counts import counts_to_arrays
+from qiskit_addon_sqd.fermion import bitstring_matrix_to_ci_strs, solve_sci
+from qiskit_addon_sqd.subsampling import postselect_by_hamming_right_and_left, subsample
 #from LUCJ_sampler import LUCJ_Sampler
 from scipy import linalg as LA
 def sqsd_fragment(
@@ -32,7 +30,7 @@ def sqsd_fragment(
     s_hist = np.zeros((iterations, n_batches))  # spin history
     d_hist = np.zeros((iterations, n_batches))  # subspace dimension history
     occupancy_hist = np.zeros((iterations, 2 * num_orbitals))
-    occupancies_bitwise = None  # orbital i corresponds to column i in bitstring matrix
+    avg_occupancies = None  # (spin-up, spin-down) mean orbital occupancies
     rand_seed=None
     open_shell=True
     ''' set up tracker to return the lowest rdm for the global e minimum'''
@@ -43,16 +41,17 @@ def sqsd_fragment(
     dm2_mo_lowest_global = None
     for i in range(iterations):
         print(f"Starting configuration recovery iteration {i}")
-        if occupancies_bitwise is None:
-            counts_dict = results 
+        if avg_occupancies is None:
+            counts_dict = results
             bitstring_matrix_full, probs_arr_full = counts_to_arrays(counts_dict)
             bs_mat_tmp = bitstring_matrix_full
             probs_arr_tmp = probs_arr_full
         else:
-            bs_mat_tmp, probs_arr_tmp = recover_configurations(bitstring_matrix_full,probs_arr_full,occupancies_bitwise,num_elec_b,num_elec_a,rand_seed=rand_seed)
+            bs_mat_tmp, probs_arr_tmp = recover_configurations(bitstring_matrix_full,probs_arr_full,avg_occupancies,num_elec_a,num_elec_b,rand_seed=rand_seed)
 
         # Throw out samples with incorrect hamming weight and create batches of subsamples.
-        batches = postselect_and_subsample(bs_mat_tmp,probs_arr_tmp,num_elec_b,num_elec_a,samples_per_batch,n_batches,rand_seed=rand_seed)
+        bs_mat_postsel, probs_arr_postsel = postselect_by_hamming_right_and_left(bs_mat_tmp,probs_arr_tmp,hamming_right=num_elec_a,hamming_left=num_elec_b)
+        batches = subsample(bs_mat_postsel,probs_arr_postsel,samples_per_batch,n_batches,rand_seed=rand_seed)
         # Run eigenstate solvers in a loop. This loop should be parallelized for larger problems.
         int_e = np.zeros(n_batches)
         int_s = np.zeros(n_batches)
@@ -67,10 +66,15 @@ def sqsd_fragment(
         lowest_energy_batch_index = -1
 
         for j in range(n_batches):
-            addresses = bitstring_matrix_to_sorted_addresses(batches[j], open_shell=open_shell)
-            addresses = addresses[::-1]
+            addresses = bitstring_matrix_to_ci_strs(batches[j], open_shell=open_shell)
             int_d[j] = len(addresses[0]) * len(addresses[1])
-            energy_sci, coeffs_sci, avg_occs, spin, dm1_MO, dm2_MO = solve_pyscf2(addresses,h1e_MO,h2e_MO,num_elec_a,num_elec_b,spin_sq=spin_sq,max_davidson=max_davidson_cycles,tol=1e-12)
+            result = solve_sci(addresses,h1e_MO,h2e_MO,num_orbitals,(num_elec_a,num_elec_b),spin_sq=spin_sq,max_cycle=max_davidson_cycles,tol=1e-12)
+            energy_sci = result.energy
+            coeffs_sci = result.sci_state
+            avg_occs = result.orbital_occupancies
+            spin = result.sci_state.spin_square()
+            dm1_MO = result.sci_state.rdm(rank=1, spin_summed=False)
+            dm2_MO = result.rdm2
             #energy_sci += e_core 
             #nuclear_repulsion_energy
             print('spin is',spin)
@@ -86,8 +90,8 @@ def sqsd_fragment(
                 lowest_energy_batch_index = j
         # Combine batch results
         avg_occupancy = np.mean(int_occs, axis=0)
-        # The occupancies from the solver should be flipped to match the bits in the bitstring matrix.
-        occupancies_bitwise = flip_orbital_occupancies(avg_occupancy)
+        # int_occs stores (spin-up | spin-down); recover_configurations wants (up, down).
+        avg_occupancies = (avg_occupancy[:num_orbitals], avg_occupancy[num_orbitals:])
 
         # Track optimization history
         e_hist[i, :] = int_e
