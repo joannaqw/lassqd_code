@@ -99,6 +99,7 @@ def get_kernel_fn(ifrag, jobtype="quantum"):
                 max_davidson_cycles=200,
                 results=results,
                 counter=counter,
+                nroots=10,
             )
             counter += 1
             etot = np.min(e) + h0

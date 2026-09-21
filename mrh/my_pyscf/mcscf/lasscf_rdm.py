@@ -11,7 +11,6 @@ from mrh.my_pyscf.mcscf.lasci_sync import MicroIterInstabilityException
 from mrh.my_pyscf.fci import csf_solver
 from pyscf import lib, gto, ao2mo
 from pyscf.fci.direct_spin1 import _unpack_nelec
-from lassqd import SQD_solver
 
 class LASSCF_UnitaryGroupGenerators (lasscf_sync_o0.LASSCF_UnitaryGroupGenerators):
     ''' spoof away CI degrees of freedom '''
@@ -400,14 +399,6 @@ class RDMSolver (lib.StreamObject):
             ci = fci.get_init_guess (norb, nelec, nroots, hdiag)
             dm1s, dm2 = self._ci2rdm (fci, ci, norb, nelec)
         return dm1s, dm2
-
-    def _SQD_kernel(self,bistring,norb,nelec,h0,h1s,h2):
-        e,dm1, dm2 = SQD_solver(bitstring,h1s[0,:,:],h2,nelec[0],nelec[1],norb,spin_sq=abs(nelec[0] - nelec[1]),iterations=2, n_batches = 1, samples_per_batch =1000,max_davidson_cycles=200)
-        etot= e + h0
-        dm1s = np.zeros((2,norb,norb))
-        dm1s[0,:,:] = dm1[0]
-        dm1s[1,:,:] = dm1[1]
-        return etot, dm1s, dm2
 
     def kernel (self, norb, nelec, h0, h1s, h2):
         h2 = ao2mo.restore (1, h2, norb)
