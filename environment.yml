@@ -131,7 +131,9 @@ dependencies:
       - pydantic==2.9.2
       - pydantic-core==2.23.4
       - pyjwt==2.10.1
-      - pyscf==2.10.0
+      # tested with mrh f0077658; pyscf-forge and mrh are installed after this
+      # env is created, since both must build against an installed pyscf (see README.md)
+      - pyscf==2.14.0
       - pyspnego==0.11.2
       - python-json-logger==3.2.1
       - pyyaml==6.0.2

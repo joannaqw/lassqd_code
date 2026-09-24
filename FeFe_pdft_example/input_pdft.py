@@ -1,7 +1,7 @@
 import h5py
 import os
 from pyscf import gto, scf, lib, ao2mo, tools
-from mrh.my_pyscf.mcscf.lasscf_rdm2 import extremeAsynLASSCF, make_fcibox
+from lassqd.las import LASSCFNoSymm
 import numpy as np
 from pyscf.mcscf import avas
 from qiskit_aer import AerSimulator
@@ -18,7 +18,7 @@ mf=mf.density_fit()
 mf.kernel()
 ncas,nelecas,guess_mo_coeff=avas.kernel(mf,['Fe 3d'] ,minao=mol.basis)
 mo_list = [100,101,102,103,104,105,106,107,108,109]
-las =extremeAsynLASSCF(mf,(5,5),((4,2),(2,4)),spin_sub =(3,3))
+las =LASSCFNoSymm(mf,(5,5),((4,2),(2,4)),spin_sub =(3,3))
 nfrag = 2   
 ncas_sub = np.array([5,5])
 norb_cas = np.sum(ncas_sub)

@@ -14,12 +14,10 @@
 ulimit -s unlimited
 export OMP_NUM_THREADS=4
  
+conda activate lassqd
+# pyscf, pyscf-forge, mrh and lassqd are all installed in the env (see README.md);
+# clear these so no other copy on PYTHONPATH can shadow them
 export PYTHONPATH=
 export PYSCF_EXT_PATH=
-export PYSCF=/home/qjwang/.local/lib/python3.9/site-packages/pyscf
-export MRH=/project/lgagliardi/qjwang:/project/lgagliardi/qjwang/mrh
-export SHARED_PYSCF_ext=$SHARED_APPS/pyscf_ext/pyscf-forge
-export PYSCF_EXT_PATH=$SHARED_PYSCF_ext
-export PYTHONPATH=$MRH$PYSCF:$SHARED_PYSCF_ext:$PYTHONPATH
 
 python input_pdft.py > fefe_run_pdft.out
