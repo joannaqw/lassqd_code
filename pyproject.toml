@@ -10,7 +10,23 @@ readme = "README.md"
 requires-python = ">=3.10"
 # mrh (https://github.com/MatthewRHermes/mrh) and pyscf-forge are also required
 # but are installed separately; see README.md.
-dependencies = ["numpy", "pyscf"]
+dependencies = [
+    "numpy",
+    "scipy",
+    "h5py",
+    "pyscf",
+    "qiskit",
+    "qiskit-aer",
+    "qiskit-addon-sqd",
+    "ffsim",
+]
+
+[project.optional-dependencies]
+ibm = ["qiskit-ibm-runtime"]
+test = ["pytest"]
 
 [tool.setuptools]
 packages = ["lassqd"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
