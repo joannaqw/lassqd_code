@@ -20,4 +20,4 @@ conda activate lassqd
 export PYTHONPATH=
 export PYSCF_EXT_PATH=
 
-python input_pdft.py > fefe_run_pdft.out
+python pdft_from_rdms.py > fefe_run_pdft.out
