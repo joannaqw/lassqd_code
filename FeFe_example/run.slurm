@@ -16,10 +16,9 @@ export OMP_NUM_THREADS=14
 #export PYSCF_MAX_MEMORY=180000
 conda activate lassqd
 #module load mkl/2023.1
+# pyscf, pyscf-forge, mrh and lassqd are all installed in the env (see README.md);
+# clear these so no other copy on PYTHONPATH can shadow them
 export PYTHONPATH=
 export PYSCF_EXT_PATH=
-export PYSCF=/home/qjwang/.local/lib/python3.9/site-packages/pyscf
-export MRH=/project/lgagliardi/qjwang:/project/lgagliardi/qjwang/mrh
-export PYTHONPATH=$MRH$PYSCF:$PYTHONPATH
 
 python input.py > lassqd_max.out
