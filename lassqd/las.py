@@ -8,17 +8,34 @@ Each hybrid cycle runs LASSCF twice at the same orbitals:
    ``las.kernel`` then takes one orbital step.
 """
 
+from collections.abc import Callable, Sequence
+
 import numpy as np
 from mrh.my_pyscf.mcscf.lasscf_rdm import LASSCFNoSymm, make_fcibox
 
 __all__ = ["LASSCFNoSymm", "set_fragment_kernels", "fragment_hamiltonians"]
 
+# ``kernel(norb, nelec, h0, h1s, h2) -> (e, dm1s, dm2)``, e.g. :class:`lassqd.sqd.FragmentSQD`.
+FragmentKernel = Callable[
+    [int, tuple[int, int], float, np.ndarray, np.ndarray],
+    tuple[float, np.ndarray, np.ndarray],
+]
 
-def set_fragment_kernels(las, kernels):
+
+def set_fragment_kernels(las: LASSCFNoSymm, kernels: Sequence[FragmentKernel]) -> None:
     """Solve fragment ``i`` with ``kernels[i](norb, nelec, h0, h1s, h2) -> (e, dm1s, dm2)``.
 
     Each fragment keeps the spin and multiplicity ``las`` was built with
     (``spin_sub``), which upstream mrh needs to write its checkpoint file.
+
+    Args:
+        las: RDM-based LASSCF object; its ``fciboxes`` are replaced in place.
+        kernels: One kernel per fragment, in fragment order. Each receives the
+            fragment's orbital count, ``(neleca, nelecb)``, constant energy,
+            spin-separated one-electron integrals of shape ``(2, norb, norb)`` and
+            two-electron integrals of shape ``(norb,) * 4``, and returns the
+            fragment energy, spin-separated 1-RDMs of shape ``(2, norb, norb)`` and
+            spin-summed 2-RDM of shape ``(norb,) * 4``.
     """
     las.fciboxes = [
         make_fcibox(
@@ -35,13 +52,25 @@ class _HamiltoniansCaptured(Exception):
     pass
 
 
-def fragment_hamiltonians(las, mo_coeff):
-    """Return ``[(h0, h1s, h2), ...]`` that ``las.kernel(mo_coeff)`` would pass to
-    each fragment kernel.
+def fragment_hamiltonians(
+    las: LASSCFNoSymm, mo_coeff: np.ndarray
+) -> list[tuple[float, np.ndarray, np.ndarray]]:
+    """Collect the Hamiltonians ``las.kernel(mo_coeff)`` would pass to each fragment kernel.
 
     The upstream kernel is run up to its first CI step and then stopped, so these
     are exactly the Hamiltonians the SQD pass will receive at the same orbitals.
     ``las.fciboxes`` is restored afterwards.
+
+    Args:
+        las: RDM-based LASSCF object.
+        mo_coeff: Molecular orbital coefficients to evaluate the Hamiltonians at.
+
+    Returns:
+        ``[(h0, h1s, h2), ...]`` in fragment order, with the argument shapes
+        described in :func:`set_fragment_kernels`.
+
+    Raises:
+        RuntimeError: If ``las.kernel`` returns without visiting every fragment.
     """
     hams = [None] * las.nfrags
 

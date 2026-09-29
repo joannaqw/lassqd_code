@@ -11,15 +11,37 @@ space. After :func:`lassqd.run_lassqd` that is ``result.mo_coeff`` with
 is used.
 """
 
+from __future__ import annotations
+
+import os
+from collections.abc import Sequence
 from itertools import combinations
+from typing import TYPE_CHECKING
 
 import h5py
 import numpy as np
 from scipy import linalg
 
+if TYPE_CHECKING:
+    from mrh.my_pyscf.mcscf.lasci import LASCINoSymm
 
-def save_rdms(filename, casdm1frs, casdm2fr, mo_coeff=None):
-    """Write fragment RDMs (and optionally the matching orbitals) to HDF5."""
+
+def save_rdms(
+    filename: str | os.PathLike,
+    casdm1frs: Sequence[np.ndarray],
+    casdm2fr: Sequence[np.ndarray],
+    mo_coeff: np.ndarray | None = None,
+) -> None:
+    """Write fragment RDMs (and optionally the matching orbitals) to HDF5.
+
+    Args:
+        filename: HDF5 file to write; overwritten if it exists.
+        casdm1frs: Per-fragment spin-separated 1-RDMs, shape ``(nroots, 2, n_i, n_i)``
+            or ``(2, n_i, n_i)``. They are stored with a leading root axis.
+        casdm2fr: Per-fragment spin-summed 2-RDMs, shape ``(nroots, n_i, n_i, n_i, n_i)``
+            or ``(n_i, n_i, n_i, n_i)``. They are stored with a leading root axis.
+        mo_coeff: Orbitals the RDMs are expressed in, if they should be stored too.
+    """
     with h5py.File(filename, "w") as f:
         dm1_group = f.create_group("casdm1frs")
         dm2_group = f.create_group("casdm2frs")
@@ -30,10 +52,17 @@ def save_rdms(filename, casdm1frs, casdm2fr, mo_coeff=None):
             f.create_dataset("mo_coeff", data=mo_coeff)
 
 
-def load_rdms(filename):
-    """Read ``(casdm1frs, casdm2fr, mo_coeff)`` written by :func:`save_rdms`.
+def load_rdms(
+    filename: str | os.PathLike,
+) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray | None]:
+    """Read fragment RDMs and orbitals written by :func:`save_rdms`.
 
-    ``mo_coeff`` is None if the file does not contain orbitals.
+    Args:
+        filename: HDF5 file to read.
+
+    Returns:
+        ``(casdm1frs, casdm2fr, mo_coeff)``, with a leading root axis on every RDM.
+        ``mo_coeff`` is None if the file does not contain orbitals.
     """
     with h5py.File(filename, "r") as f:
         keys = sorted(f["casdm1frs"].keys(), key=int)
@@ -43,19 +72,33 @@ def load_rdms(filename):
     return casdm1frs, casdm2fr, mo_coeff
 
 
-def make_casdm1s(casdm1frs):
-    """Block-diagonal spin-separated active-space 1-RDM, shape ``(2, ncas, ncas)``."""
+def make_casdm1s(casdm1frs: Sequence[np.ndarray]) -> np.ndarray:
+    """Build the block-diagonal spin-separated active-space 1-RDM from root 0.
+
+    Args:
+        casdm1frs: Per-fragment spin-separated 1-RDMs, shape ``(nroots, 2, n_i, n_i)``.
+
+    Returns:
+        The active-space 1-RDM, shape ``(2, ncas, ncas)``.
+    """
     return np.stack(
         [linalg.block_diag(*[dm1rs[0][ispin] for dm1rs in casdm1frs]) for ispin in (0, 1)],
         axis=0,
     )
 
 
-def make_casdm2(casdm1frs, casdm2fr):
-    """Spin-summed active-space 2-RDM of the LAS product state.
+def make_casdm2(casdm1frs: Sequence[np.ndarray], casdm2fr: Sequence[np.ndarray]) -> np.ndarray:
+    """Build the spin-summed active-space 2-RDM of the LAS product state from root 0.
 
     Diagonal blocks are the fragment 2-RDMs; off-diagonal blocks are the Coulomb
     and exchange products of the fragment 1-RDMs.
+
+    Args:
+        casdm1frs: Per-fragment spin-separated 1-RDMs, shape ``(nroots, 2, n_i, n_i)``.
+        casdm2fr: Per-fragment spin-summed 2-RDMs, shape ``(nroots, n_i, n_i, n_i, n_i)``.
+
+    Returns:
+        The active-space 2-RDM, shape ``(ncas,) * 4``.
     """
     ncas_sub = [dm1rs.shape[-1] for dm1rs in casdm1frs]
     ncas_cum = np.cumsum([0] + ncas_sub)
@@ -80,10 +123,28 @@ def make_casdm2(casdm1frs, casdm2fr):
     return casdm2
 
 
-def lassqd_pdft_energy(las, casdm1frs, casdm2fr, mo_coeff, ot="tPBE"):
-    """MC-PDFT total energy of the LAS wave function ``(mo_coeff, casdm1frs, casdm2fr)``,
-    using mrh's LAS-PDFT with the RDMs supplied directly instead of built from CI
-    vectors."""
+def lassqd_pdft_energy(
+    las: LASCINoSymm,
+    casdm1frs: Sequence[np.ndarray],
+    casdm2fr: Sequence[np.ndarray],
+    mo_coeff: np.ndarray,
+    ot: str = "tPBE",
+) -> float:
+    """Compute the MC-PDFT total energy of a LAS wave function.
+
+    The wave function is ``(mo_coeff, casdm1frs, casdm2fr)``. This uses mrh's
+    LAS-PDFT with the RDMs supplied directly instead of built from CI vectors.
+
+    Args:
+        las: LAS object defining the molecule and fragment partitioning.
+        casdm1frs: Per-fragment spin-separated 1-RDMs, shape ``(nroots, 2, n_i, n_i)``.
+        casdm2fr: Per-fragment spin-summed 2-RDMs, shape ``(nroots, n_i, n_i, n_i, n_i)``.
+        mo_coeff: Orbitals whose active space the RDMs are expressed in.
+        ot: On-top functional, e.g. ``"tPBE"``.
+
+    Returns:
+        The MC-PDFT total energy.
+    """
     from mrh.my_pyscf.mcpdft.laspdft import get_mcpdft_child_class
 
     pdft = get_mcpdft_child_class(las, ot=ot)

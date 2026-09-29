@@ -5,21 +5,39 @@ glued side by side onto one register, with one classical register per fragment,
 so a single job samples every fragment; the counts are then cut back apart.
 """
 
+from collections.abc import Callable, Sequence
+
 import numpy as np
 from pyscf import cc
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
 
 from lassqd.basis import fragment_mo_basis, fragment_rohf
 
+# ``circuit_fn(h1, h2, norb, nelec) -> circuit``, e.g. :func:`lucj_circuit`.
+CircuitFn = Callable[[np.ndarray, np.ndarray, int, tuple[int, int]], QuantumCircuit]
 
-def lucj_circuit(h1, h2, norb, nelec, *, n_reps=1):
-    """Spin-unbalanced LUCJ circuit (Hartree-Fock + UCJ, no measurements) for one
-    fragment Hamiltonian ``(h1, h2)`` in the LAS basis.
 
-    The UCJ operator starts from CCSD amplitudes on the fragment's ROHF reference
-    and is then optimized with ffsim's linear method. Qubit ordering is ffsim's
-    Jordan-Wigner convention: alpha orbitals on qubits ``0..norb-1``, beta on
-    ``norb..2*norb-1``.
+def lucj_circuit(
+    h1: np.ndarray, h2: np.ndarray, norb: int, nelec: tuple[int, int], *, n_reps: int = 1
+) -> QuantumCircuit:
+    """Build a spin-unbalanced LUCJ circuit for one fragment Hamiltonian.
+
+    The circuit is Hartree-Fock state preparation followed by the UCJ operator,
+    with no measurements. The UCJ operator starts from CCSD amplitudes on the
+    fragment's ROHF reference and is then optimized with ffsim's linear method.
+    Qubit ordering is ffsim's Jordan-Wigner convention: alpha orbitals on qubits
+    ``0..norb-1``, beta on ``norb..2*norb-1``.
+
+    Args:
+        h1: One-electron integrals in the LAS basis, shape ``(norb, norb)``.
+        h2: Two-electron integrals in the LAS basis, in chemists' notation, shape
+            ``(norb,) * 4``.
+        norb: Number of fragment orbitals. Numpy integers are accepted.
+        nelec: ``(neleca, nelecb)``. Numpy integers are accepted.
+        n_reps: Number of UCJ layers.
+
+    Returns:
+        A ``2 * norb``-qubit circuit preparing the optimized LUCJ state.
     """
     import ffsim
     from ffsim.optimize import minimize_linear_method
@@ -69,9 +87,17 @@ def lucj_circuit(h1, h2, norb, nelec, *, n_reps=1):
     return circuit
 
 
-def glue_circuits(circuits):
-    """Place ``circuits`` side by side on one register and measure each one into
-    its own classical register, in order."""
+def glue_circuits(circuits: Sequence[QuantumCircuit]) -> QuantumCircuit:
+    """Place circuits side by side on one register and measure each separately.
+
+    Args:
+        circuits: Fragment circuits, in fragment order.
+
+    Returns:
+        One circuit whose qubits are the fragment circuits' qubits concatenated in
+        order, with one classical register per fragment; ``circuits[i]`` is
+        measured into ``cregs[i]``.
+    """
     widths = [qc.num_qubits for qc in circuits]
     glued = QuantumCircuit(sum(widths))
     cregs = [ClassicalRegister(n) for n in widths]
@@ -86,11 +112,19 @@ def glue_circuits(circuits):
     return glued
 
 
-def cut_counts(counts):
+def cut_counts(counts: dict[str, int]) -> list[dict[str, int]]:
     """Split the counts of a glued circuit into one counts dict per fragment.
 
     Qiskit joins the classical registers with spaces, last register first, so the
     split keys are reversed to put fragment 0 first.
+
+    Args:
+        counts: Counts of a circuit from :func:`glue_circuits`, keyed by
+            space-separated per-register bitstrings.
+
+    Returns:
+        One counts dict per fragment, in fragment order, each marginalized over the
+        other fragments.
     """
     per_fragment = None
     for key, count in counts.items():

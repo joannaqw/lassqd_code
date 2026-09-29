@@ -1,12 +1,15 @@
 """The hybrid LASSQD loop."""
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
 from pyscf.lib import logger
 
-from lassqd.circuits import glue_circuits, lucj_circuit
-from lassqd.las import fragment_hamiltonians, set_fragment_kernels
+from lassqd.circuits import CircuitFn, glue_circuits, lucj_circuit
+from lassqd.las import LASSCFNoSymm, fragment_hamiltonians, set_fragment_kernels
+from lassqd.samplers import Sampler
+from lassqd.sqd import FragmentSQD
 
 
 @dataclass
@@ -16,27 +19,35 @@ class HybridResult:
     ``mo_coeff``, ``casdm1frs`` and ``casdm2fr`` are one consistent LAS wave
     function (the RDMs are expressed in ``mo_coeff``'s active orbitals), as needed
     for LAS-PDFT; see :func:`lassqd.pdft.lassqd_pdft_energy`.
+
+    Attributes:
+        converged: Whether ``|dE| < conv_tol`` was reached within ``max_cycles``.
+        e_tot: Total energy after the last cycle.
+        mo_coeff: Orbitals after the last cycle.
+        casdm1frs: Per-fragment spin-separated 1-RDMs, shape ``(nroots, 2, n_i, n_i)``.
+        casdm2fr: Per-fragment spin-summed 2-RDMs, shape ``(nroots, n_i, n_i, n_i, n_i)``.
+        e_hist: Total energy after each cycle.
     """
 
     converged: bool
     e_tot: float
     mo_coeff: np.ndarray
-    casdm1frs: list
-    casdm2fr: list
-    e_hist: list
+    casdm1frs: list[np.ndarray]
+    casdm2fr: list[np.ndarray]
+    e_hist: list[float]
 
 
 def run_lassqd(
-    las,
-    mo_coeff,
-    solvers,
-    sampler,
+    las: LASSCFNoSymm,
+    mo_coeff: np.ndarray,
+    solvers: Sequence[FragmentSQD],
+    sampler: Sampler,
     *,
-    circuit_fn=lucj_circuit,
-    max_cycles=50,
-    conv_tol=1e-5,
-    callback=None,
-):
+    circuit_fn: CircuitFn = lucj_circuit,
+    max_cycles: int = 50,
+    conv_tol: float = 1e-5,
+    callback: Callable[[int, LASSCFNoSymm], None] | None = None,
+) -> HybridResult:
     """Run hybrid LASSQD cycles from ``mo_coeff`` until ``|dE| < conv_tol``.
 
     Each cycle, at fixed orbitals:
@@ -47,8 +58,24 @@ def run_lassqd(
        :class:`lassqd.sqd.FragmentSQD`) and let ``las.kernel`` solve the fragments
        and take one orbital step.
 
-    ``callback(cycle, las)`` is called after every cycle, e.g. to checkpoint
-    ``las.mo_coeff``.
+    ``las.max_cycle_macro`` and ``las.max_cycle_rdmjk`` are overridden during the
+    run and restored afterwards.
+
+    Args:
+        las: RDM-based LASSCF object. Its fragment solvers are replaced by
+            ``solvers``.
+        mo_coeff: Initial molecular orbital coefficients.
+        solvers: One solver per fragment, in fragment order.
+        sampler: Runs the glued circuit and returns one counts dict per fragment;
+            see :mod:`lassqd.samplers`.
+        circuit_fn: Builds the state-preparation circuit for one fragment.
+        max_cycles: Maximum number of hybrid cycles.
+        conv_tol: Energy convergence threshold between consecutive cycles.
+        callback: Called as ``callback(cycle, las)`` after every cycle, e.g. to
+            checkpoint ``las.mo_coeff``.
+
+    Returns:
+        The final energy, orbitals and fragment RDMs, and the energy history.
     """
     log = logger.new_logger(las)
     saved = las.max_cycle_macro, las.max_cycle_rdmjk

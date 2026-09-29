@@ -1,7 +1,9 @@
 """Sample-based quantum diagonalization as a LASSCF fragment kernel."""
 
+import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from pyscf import fci
@@ -20,7 +22,7 @@ from lassqd.basis import fragment_mo_basis, fragment_rohf, from_mo
 
 
 def solve_sci_nroots(
-    ci_strings,
+    ci_strings: tuple[np.ndarray, np.ndarray],
     hcore: np.ndarray,
     eri: np.ndarray,
     norb: int,
@@ -28,7 +30,7 @@ def solve_sci_nroots(
     *,
     spin_sq: float | None = None,
     nroots: int | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> SCIResult:
     """``qiskit_addon_sqd.fermion.solve_sci`` with an optional ``nroots``.
 
@@ -37,6 +39,22 @@ def solve_sci_nroots(
     we therefore call pyscf directly and repackage the lowest root into the
     addon's :class:`SCIResult` / :class:`SCIState` types, so the rest of the
     loop is unchanged. ``nroots=None`` delegates straight to the addon.
+
+    Args:
+        ci_strings: Alpha and beta determinant strings spanning the subspace.
+        hcore: One-electron integrals, shape ``(norb, norb)``.
+        eri: Two-electron integrals in chemists' notation, shape ``(norb,) * 4``.
+        norb: Number of orbitals.
+        nelec: ``(neleca, nelecb)``.
+        spin_sq: Target ``<S^2>``, enforced with a spin penalty; None for no penalty.
+        nroots: Number of Davidson roots to solve for; only the lowest is returned.
+            None delegates to ``solve_sci``.
+        **kwargs: Passed to ``solve_sci``, or to pyscf's ``kernel_fixed_space`` when
+            ``nroots`` is given (e.g. ``max_cycle``, ``tol``).
+
+    Returns:
+        The lowest root's energy (without the constant term), state, orbital
+        occupancies and spin-summed RDMs.
     """
     if nroots is None:
         return solve_sci(ci_strings, hcore, eri, norb, nelec, spin_sq=spin_sq, **kwargs)
@@ -76,12 +94,22 @@ def _strings_to_bitstrings(strings, norb):
     return ((strings[:, None] >> np.arange(norb)[::-1]) & 1).astype(bool)
 
 
-def permute_carryover(strings_a, strings_b, overlap, norb):
+def permute_carryover(
+    strings_a: np.ndarray, strings_b: np.ndarray, overlap: np.ndarray, norb: int
+) -> tuple[np.ndarray, np.ndarray]:
     """Map carried-over determinant strings onto a new orbital basis.
 
-    ``overlap[p, q]`` is the overlap of new orbital ``p`` with old orbital ``q``.
     Each new orbital takes the occupation of the old orbital it overlaps most.
-    Returns unique ``(strings_a, strings_b)``.
+
+    Args:
+        strings_a: Alpha determinant strings in the old basis, as integers.
+        strings_b: Beta determinant strings in the old basis, as integers.
+        overlap: ``overlap[p, q]`` is the overlap of new orbital ``p`` with old
+            orbital ``q``, shape ``(norb, norb)``.
+        norb: Number of orbitals.
+
+    Returns:
+        Unique ``(strings_a, strings_b)`` in the new basis.
     """
     rho = np.argmax(np.abs(overlap), axis=1)
     # Bitstring columns run from orbital norb-1 down to 0; flip to index by orbital.
@@ -114,23 +142,39 @@ class FragmentSQD:
     ``a_hist``/``b_hist`` (alpha/beta string counts), ``s_hist`` (<S^2>), all of
     shape ``(iterations, n_batches)``; ``occupancy_hist``; ``e_tot``; ``dm1s`` and
     ``dm2`` in the LAS basis; ``sci_state`` in the fragment ROHF basis.
+
+    Args:
+        iterations: Rounds of configuration recovery per call.
+        n_batches: Subsampled batches per round.
+        samples_per_batch: Samples drawn for each batch.
+        max_davidson_cycles: Maximum Davidson iterations per batch.
+        tol: Davidson convergence tolerance.
+        nroots: Number of Davidson roots; see :func:`solve_sci_nroots`.
+        spin_sq: Target ``<S^2>``. None uses ``S(S + 1)`` with
+            ``S = |neleca - nelecb| / 2``.
+        carryover_threshold: Minimum ``|amplitude|`` for a determinant to be
+            carried over; None disables carryover.
+        seed: Seed for configuration recovery and subsampling.
+        output_dir: If given, the final state, histories and carryover strings are
+            saved here after every call.
+        verbose: pyscf logger verbosity.
     """
 
     def __init__(
         self,
-        iterations,
-        n_batches,
-        samples_per_batch,
+        iterations: int,
+        n_batches: int,
+        samples_per_batch: int,
         *,
-        max_davidson_cycles=200,
-        tol=1e-12,
-        nroots=None,
-        spin_sq=None,
-        carryover_threshold=None,
-        seed=None,
-        output_dir=None,
-        verbose=logger.INFO,
-    ):
+        max_davidson_cycles: int = 200,
+        tol: float = 1e-12,
+        nroots: int | None = None,
+        spin_sq: float | None = None,
+        carryover_threshold: float | None = None,
+        seed: int | np.random.Generator | None = None,
+        output_dir: str | os.PathLike | None = None,
+        verbose: int = logger.INFO,
+    ) -> None:
         self.iterations = iterations
         self.n_batches = n_batches
         self.samples_per_batch = samples_per_batch
@@ -142,11 +186,32 @@ class FragmentSQD:
         self.rng = np.random.default_rng(seed)
         self.output_dir = None if output_dir is None else Path(output_dir)
         self.verbose = verbose
-        self.counts = None
-        self.carryover_strings = None
-        self.prev_mo = None
+        self.counts: dict[str, int] | None = None
+        self.carryover_strings: tuple[np.ndarray, np.ndarray] | None = None
+        self.prev_mo: np.ndarray | None = None
 
-    def __call__(self, norb, nelec, h0, h1s, h2):
+    def __call__(
+        self, norb: int, nelec: tuple[int, int], h0: float, h1s: np.ndarray, h2: np.ndarray
+    ) -> tuple[float, np.ndarray, np.ndarray]:
+        """Solve the fragment with SQD on ``self.counts``.
+
+        Args:
+            norb: Number of fragment orbitals.
+            nelec: ``(neleca, nelecb)``.
+            h0: Constant energy term.
+            h1s: One-electron integrals in the LAS basis, spin-separated with shape
+                ``(2, norb, norb)`` or spin-free with shape ``(norb, norb)``.
+            h2: Two-electron integrals in the LAS basis, in chemists' notation,
+                shape ``(norb,) * 4``.
+
+        Returns:
+            ``(e_tot, dm1s, dm2)``: the fragment energy including ``h0``, the
+            spin-separated 1-RDMs of shape ``(2, norb, norb)`` and the spin-summed
+            2-RDM of shape ``(norb,) * 4``, both in the LAS basis.
+
+        Raises:
+            RuntimeError: If ``self.counts`` has not been set.
+        """
         log = logger.Logger(sys.stdout, self.verbose)
         if self.counts is None:
             raise RuntimeError("FragmentSQD.counts must be set before the kernel is called")
