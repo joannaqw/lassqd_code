@@ -1,8 +1,10 @@
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
+from qiskit_aer import AerSimulator
+from qiskit_aer.primitives import SamplerV2
 
-from lassqd import aer_sampler, cut_counts, fragment_hamiltonians, glue_circuits, lucj_circuit
+from lassqd import fragment_hamiltonians, glue_circuits, lucj_circuit, preset_pass_manager
 
 
 def x_circuit(n, flipped):
@@ -12,16 +14,12 @@ def x_circuit(n, flipped):
     return qc
 
 
-def test_cut_counts_orders_fragments_first_to_last():
-    # Qiskit writes the last register first.
-    counts = {"11 000 01": 3, "11 100 01": 2}
-    assert cut_counts(counts) == [{"01": 5}, {"000": 3, "100": 2}, {"11": 5}]
-
-
 def test_glue_and_sample_recovers_each_fragment():
     circuits = [x_circuit(2, [0]), x_circuit(3, [2]), x_circuit(2, [0, 1])]
-    counts = aer_sampler(shots=64)(glue_circuits(circuits))
+    glued = glue_circuits(circuits)
+    data = SamplerV2().run([glued], shots=64).result()[0].data
     # Within a fragment, qubit 0 is the rightmost bit.
+    counts = [data[creg.name].get_counts() for creg in glued.cregs]
     assert counts == [{"01": 64}, {"100": 64}, {"11": 64}]
 
 
@@ -32,7 +30,8 @@ def test_lucj_circuit_conserves_particle_number(h6):
     norb, (neleca, nelecb) = las.ncas_sub[0], las.nelecas_sub[0]
     qc = lucj_circuit(h1s[0], h2, norb, (neleca, nelecb))
     assert qc.num_qubits == 2 * norb
-    counts = aer_sampler(shots=500, method="statevector")(glue_circuits([qc]))[0]
+    isa = preset_pass_manager(AerSimulator()).run(glue_circuits([qc]))
+    counts = SamplerV2().run([isa], shots=500).result()[0].data[isa.cregs[0].name].get_counts()
     for key in counts:
         # Alpha on the right half, beta on the left.
         assert key[norb:].count("1") == neleca

@@ -2,7 +2,8 @@
 
 Each fragment gets its own state-preparation circuit. The fragment circuits are
 glued side by side onto one register, with one classical register per fragment,
-so a single job samples every fragment; the counts are then cut back apart.
+so a single job samples every fragment; each fragment's counts are then read from
+its own register.
 """
 
 from collections.abc import Callable, Sequence
@@ -10,6 +11,9 @@ from collections.abc import Callable, Sequence
 import numpy as np
 from pyscf import cc
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
+from qiskit.providers import BackendV2
+from qiskit.transpiler import StagedPassManager
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 
 from lassqd.basis import fragment_mo_basis, fragment_rohf
 
@@ -112,25 +116,33 @@ def glue_circuits(circuits: Sequence[QuantumCircuit]) -> QuantumCircuit:
     return glued
 
 
-def cut_counts(counts: dict[str, int]) -> list[dict[str, int]]:
-    """Split the counts of a glued circuit into one counts dict per fragment.
+def preset_pass_manager(
+    backend: BackendV2,
+    *,
+    optimization_level: int = 3,
+    initial_layout: Sequence[int] | None = None,
+) -> StagedPassManager:
+    """Build a pass manager that transpiles glued fragment circuits for ``backend``.
 
-    Qiskit joins the classical registers with spaces, last register first, so the
-    split keys are reversed to put fragment 0 first.
+    This is qiskit's ``generate_preset_pass_manager`` with ffsim's ``PRE_INIT``
+    stage, which compiles ffsim's gates, such as those in :func:`lucj_circuit`,
+    efficiently.
 
     Args:
-        counts: Counts of a circuit from :func:`glue_circuits`, keyed by
-            space-separated per-register bitstrings.
+        backend: Backend to transpile for, e.g. an IBM backend or an
+            ``AerSimulator``.
+        optimization_level: Preset pass manager optimization level.
+        initial_layout: Physical qubit for each circuit qubit.
 
     Returns:
-        One counts dict per fragment, in fragment order, each marginalized over the
-        other fragments.
+        The pass manager, e.g. for :func:`lassqd.run_lassqd`'s ``pass_manager``.
     """
-    per_fragment = None
-    for key, count in counts.items():
-        parts = key.split()[::-1]
-        if per_fragment is None:
-            per_fragment = [{} for _ in parts]
-        for frag_counts, part in zip(per_fragment, parts):
-            frag_counts[part] = frag_counts.get(part, 0) + count
-    return per_fragment
+    import ffsim
+
+    pass_manager = generate_preset_pass_manager(
+        backend=backend,
+        optimization_level=optimization_level,
+        initial_layout=initial_layout,
+    )
+    pass_manager.pre_init = ffsim.qiskit.PRE_INIT
+    return pass_manager

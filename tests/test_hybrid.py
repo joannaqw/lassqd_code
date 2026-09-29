@@ -1,5 +1,5 @@
 import numpy as np
-from conftest import empty_circuit, full_space_sampler
+from conftest import FullSpaceSampler, empty_circuit
 
 from lassqd import FragmentSQD, LASSCFNoSymm, run_lassqd
 
@@ -10,7 +10,7 @@ def run(mf, las, mo, **kwargs):
         las,
         mo,
         solvers,
-        full_space_sampler(las),
+        FullSpaceSampler(las),
         circuit_fn=empty_circuit,
         conv_tol=1e-10,
         max_cycles=100,

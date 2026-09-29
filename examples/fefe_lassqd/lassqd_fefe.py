@@ -7,8 +7,10 @@ working directory; they are not tracked in the repository.
 
 import numpy as np
 from pyscf import gto, lib, scf
+from qiskit_aer import AerSimulator
+from qiskit_aer.primitives import SamplerV2
 
-from lassqd import FragmentSQD, LASSCFNoSymm, aer_sampler, run_lassqd
+from lassqd import FragmentSQD, LASSCFNoSymm, preset_pass_manager, run_lassqd
 
 lib.logger.TIMER_LEVEL = lib.logger.INFO
 basis = {"Fe": "6-31g", "C": "6-31g", "H": "6-31g", "O": "6-31g", "N": "6-31g"}
@@ -47,7 +49,9 @@ result = run_lassqd(
     las,
     mo_localized,
     solvers,
-    aer_sampler(shots=100_000),
+    SamplerV2(options={"backend_options": {"method": "matrix_product_state"}}),
+    pass_manager=preset_pass_manager(AerSimulator(method="matrix_product_state")),
+    shots=100_000,
     max_cycles=50,
     conv_tol=1e-5,
     callback=save_orbitals,

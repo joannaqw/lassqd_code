@@ -3,6 +3,14 @@ import itertools
 import pytest
 from pyscf import gto, scf
 from qiskit import QuantumCircuit
+from qiskit.primitives import (
+    BaseSamplerV2,
+    BitArray,
+    DataBin,
+    PrimitiveJob,
+    PrimitiveResult,
+    SamplerPubResult,
+)
 
 from lassqd import LASSCFNoSymm
 
@@ -22,9 +30,24 @@ def full_counts(norb, nelec, count=10):
     return counts
 
 
-def full_space_sampler(las):
-    """Stand-in for a quantum sampler: ignores the circuit, returns full-space counts."""
-    return lambda circuit: [full_counts(n, ne) for n, ne in zip(las.ncas_sub, las.nelecas_sub)]
+class FullSpaceSampler(BaseSamplerV2):
+    """Stand-in for a quantum sampler: ignores the circuit's gates and puts
+    full-space counts in each fragment's classical register."""
+
+    def __init__(self, las):
+        self.las = las
+
+    def run(self, pubs, *, shots=None):
+        (circuit,) = pubs
+        data = DataBin(
+            **{
+                creg.name: BitArray.from_counts(full_counts(n, ne), num_bits=creg.size)
+                for creg, n, ne in zip(circuit.cregs, self.las.ncas_sub, self.las.nelecas_sub)
+            }
+        )
+        job = PrimitiveJob(lambda: PrimitiveResult([SamplerPubResult(data)]))
+        job._submit()
+        return job
 
 
 def empty_circuit(h1, h2, norb, nelec):

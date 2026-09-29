@@ -11,13 +11,13 @@ from pathlib import Path
 import numpy as np
 from pyscf import gto, lib, scf
 from pyscf.mcscf import avas
-from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2, Session
 
 from lassqd import (
     FragmentSQD,
     LASSCFNoSymm,
-    ibm_runtime_sampler,
     lassqd_pdft_energy,
+    preset_pass_manager,
     run_lassqd,
     save_rdms,
 )
@@ -49,12 +49,8 @@ solvers = [
 # Physical qubits for fragment 0 then fragment 1 (alpha then beta orbitals each).
 spin_a_layout = [60, 61, 62, 72, 81, 82, 83, 92, 102, 103]
 spin_b_layout = [58, 71, 77, 78, 79, 91, 98, 99, 100, 101]
-sampler = ibm_runtime_sampler(
-    QiskitRuntimeService(),
-    "ibm_sherbrooke",
-    shots=30000,
-    initial_layout=spin_a_layout + spin_b_layout,
-)
+backend = QiskitRuntimeService().backend("ibm_sherbrooke")
+pass_manager = preset_pass_manager(backend, initial_layout=spin_a_layout + spin_b_layout)
 
 
 def save_wave_function(cycle, las):
@@ -65,6 +61,22 @@ def save_wave_function(cycle, las):
 
 # Restart from the orbitals of a previous run; use mo_localized to start fresh.
 mo_init = np.load("current_orb.npy")
-result = run_lassqd(las, mo_init, solvers, sampler, max_cycles=1, callback=save_wave_function)
+with Session(backend=backend) as session:
+    sampler = SamplerV2(mode=session)
+    sampler.options.max_execution_time = 10800
+    sampler.options.dynamical_decoupling.enable = True
+    sampler.options.dynamical_decoupling.sequence_type = "XpXm"
+    sampler.options.twirling.enable_gates = True
+    sampler.options.twirling.enable_measure = True
+    result = run_lassqd(
+        las,
+        mo_init,
+        solvers,
+        sampler,
+        pass_manager=pass_manager,
+        shots=30000,
+        max_cycles=1,
+        callback=save_wave_function,
+    )
 e_pdft = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_coeff, ot="tPBE")
 print("SQDPDFT energy", e_pdft)
