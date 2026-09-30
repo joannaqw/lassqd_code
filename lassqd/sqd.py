@@ -2,91 +2,19 @@
 
 import os
 import sys
-from collections.abc import Callable
+from inspect import signature
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from pyscf import fci
 from pyscf.lib import logger
 from qiskit.primitives import BitArray
 from qiskit_addon_sqd.fermion import (
-    SCIResult,
-    SCIState,
     bitstring_matrix_to_ci_strs,
     diagonalize_fermionic_hamiltonian,
-    solve_sci,
 )
 
 from lassqd.basis import fragment_mo_basis, fragment_rohf, from_mo
-
-
-def solve_sci_nroots(
-    ci_strings: tuple[np.ndarray, np.ndarray],
-    hcore: np.ndarray,
-    eri: np.ndarray,
-    norb: int,
-    nelec: tuple[int, int],
-    *,
-    spin_sq: float | None = None,
-    nroots: int | None = None,
-    **kwargs: Any,
-) -> SCIResult:
-    """``qiskit_addon_sqd.fermion.solve_sci`` with an optional ``nroots``.
-
-    The addon's own solvers only handle a single Davidson root -- their RDM
-    post-processing assumes one SCIvector, not a list. When ``nroots`` is given
-    we therefore call pyscf directly and repackage the lowest root into the
-    addon's :class:`SCIResult` / :class:`SCIState` types, so the rest of the
-    loop is unchanged. ``nroots=None`` delegates straight to the addon.
-
-    Args:
-        ci_strings: Alpha and beta determinant strings spanning the subspace.
-        hcore: One-electron integrals, shape ``(norb, norb)``.
-        eri: Two-electron integrals in chemists' notation, shape ``(norb,) * 4``.
-        norb: Number of orbitals.
-        nelec: ``(neleca, nelecb)``.
-        spin_sq: Target ``<S^2>``, enforced with a spin penalty; None for no penalty.
-        nroots: Number of Davidson roots to solve for; only the lowest is returned.
-            None delegates to ``solve_sci``.
-        **kwargs: Passed to ``solve_sci``, or to pyscf's ``kernel_fixed_space`` when
-            ``nroots`` is given (e.g. ``max_cycle``, ``tol``).
-
-    Returns:
-        The lowest root's energy (without the constant term), state, orbital
-        occupancies and spin-summed RDMs.
-    """
-    if nroots is None:
-        return solve_sci(ci_strings, hcore, eri, norb, nelec, spin_sq=spin_sq, **kwargs)
-
-    myci = fci.selected_ci.SelectedCI()
-    if spin_sq is not None:
-        myci = fci.addons.fix_spin_(myci, ss=spin_sq)
-    _, sci_vecs = fci.selected_ci.kernel_fixed_space(
-        myci, hcore, eri, norb, nelec, ci_strs=ci_strings, nroots=nroots, **kwargs
-    )
-    sci_vec = sci_vecs if nroots == 1 else sci_vecs[0]
-
-    # Energy from the RDMs, matching what solve_sci does.
-    dm1s = myci.make_rdm1s(sci_vec, norb, nelec)
-    dm1 = myci.make_rdm1(sci_vec, norb, nelec)
-    dm2 = myci.make_rdm2(sci_vec, norb, nelec)
-    energy = np.einsum("pr,pr->", dm1, hcore) + 0.5 * np.einsum("prqs,prqs->", dm2, eri)
-
-    sci_state = SCIState(
-        amplitudes=np.array(sci_vec),
-        ci_strs_a=sci_vec._strs[0],
-        ci_strs_b=sci_vec._strs[1],
-        norb=norb,
-        nelec=nelec,
-    )
-    return SCIResult(
-        energy,
-        sci_state,
-        orbital_occupancies=(np.diagonal(dm1s[0]), np.diagonal(dm1s[1])),
-        rdm1=dm1,
-        rdm2=dm2,
-    )
 
 
 def _strings_to_bitstrings(strings, norb):
@@ -127,8 +55,8 @@ class FragmentSQD:
     does this).
 
     Each call rotates the Hamiltonian to the fragment's ROHF orbitals and runs
-    up to ``iterations`` rounds of self-consistent configuration recovery, with
-    ``n_batches`` subsampled batches per round, using the addon's
+    up to ``max_iterations`` rounds of self-consistent configuration recovery,
+    with ``num_batches`` subsampled batches per round, using the addon's
     :func:`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`. Recovery
     uses the lowest-energy batch's occupancies from the preceding round. The
     returned energy, RDMs and carryover strings all come from the lowest-energy
@@ -136,117 +64,49 @@ class FragmentSQD:
 
     Only the alpha one-electron Hamiltonian ``h1s[0]`` is used.
 
-    Carryover (``carryover_threshold`` not None): determinants whose amplitude
+    Carryover (enabled by default): determinants whose amplitude
     exceeds the threshold are added to every batch of the next round, and of the
     next call, after being mapped onto that call's orbitals with
-    :func:`permute_carryover`.
+    :func:`permute_carryover`. Set ``carryover_threshold=None`` or ``np.inf`` to
+    disable carryover.
 
     Attributes set by each call: ``e_hist``, ``d_hist`` (subspace dimension),
     ``a_hist``/``b_hist`` (alpha/beta string counts), ``s_hist`` (<S^2>), all of
-    shape ``(completed_iterations, n_batches)``; ``occupancy_hist`` (the lowest-energy
+    shape ``(completed_iterations, num_batches)``; ``occupancy_hist`` (the lowest-energy
     batch's occupancies per round, alpha then beta, shape
     ``(completed_iterations, 2 * norb)``); ``e_tot``; ``dm1s`` and ``dm2`` in the
     LAS basis; ``sci_state`` in the fragment ROHF basis.
 
     Args:
-        iterations: Maximum rounds of configuration recovery per call; maps to
-            the addon's ``max_iterations``.
-        n_batches: Subsampled batches per round; maps to the addon's ``num_batches``.
         samples_per_batch: Samples drawn for each batch.
-        energy_tol: Configuration-recovery energy convergence tolerance. Both
-            energy and occupancies must converge to stop early. Defaults to zero
-            to run all requested iterations.
-        occupancies_tol: Configuration-recovery occupancy convergence tolerance
-            (maximum absolute change). Defaults to zero, disabling early stopping.
-        sci_solver: Custom batch solver with signature
-            ``(ci_strings, h1, h2, norb, nelec) -> list[SCIResult]``, using the
-            fragment ROHF basis. None uses :func:`solve_sci_nroots` on each batch.
-            A custom solver controls its own spin constraint and Davidson settings;
-            ``spin_sq``, ``nroots``, ``max_davidson_cycles`` and ``tol`` apply only
-            to the default solver. Missing RDMs are computed from the returned state.
-        symmetrize_spin: Merge alpha and beta strings for spin-exchange symmetry.
-            Requires equal alpha and beta electron counts.
-        max_dim: Maximum number of strings in each spin sector, either a single
-            limit or ``(max_dim_a, max_dim_b)``; None means unlimited. The total
-            subspace dimension is at most ``max_dim_a * max_dim_b``.
-        include_configurations: Single-spin determinant strings to include in
-            every batch, either one list/array for both spins or an alpha/beta
-            pair of lists. Express these in the current fragment ROHF basis.
-            They are merged with carryover from previous calls and subject to
-            the addon's ``max_dim`` truncation.
-        initial_occupancies: Initial alpha/beta orbital occupancies in the current
-            fragment ROHF basis, used at the start of each call. None starts with
-            postselection; an explicit guess allows recovery of entirely noisy
-            counts with no valid sampled configurations.
-        callback: Called with ``list[SCIResult]`` after each recovery round,
-            after recording the internal histories. Energies exclude ``h0`` and
-            states are in the fragment ROHF basis, as in the addon callback.
-        max_davidson_cycles: Maximum Davidson iterations per batch.
-        tol: Davidson convergence tolerance.
-        nroots: Number of Davidson roots; see :func:`solve_sci_nroots`.
-        spin_sq: Target ``<S^2>``. None uses ``S(S + 1)`` with
-            ``S = |neleca - nelecb| / 2``.
-        carryover_threshold: Minimum ``|amplitude|`` for a determinant to be
-            carried over; None disables carryover.
-        seed: Seed for configuration recovery and subsampling.
         output_dir: If given, the final state, histories and carryover strings are
             saved here after every call.
         verbose: pyscf logger verbosity.
+        **sqd_options: Options for
+            :func:`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`,
+            using the addon's names and defaults, including early stopping and
+            carryover. Stored in ``solver.sqd_options`` and editable between calls.
+            ``seed`` is converted to a persistent NumPy generator on use, so the
+            random stream advances across calls. ``callback`` runs after internal
+            histories are recorded; its energies exclude ``h0``. States,
+            ``include_configurations`` and ``initial_occupancies`` use the current
+            fragment ROHF basis. Included configurations are merged with carryover
+            from previous calls before the addon's ``max_dim`` truncation.
+            Configure spin constraints and Davidson settings through ``sci_solver``,
+            for example ``functools.partial(solve_sci_batch, spin_sq=2, tol=1e-12)``.
+            Missing RDMs are computed from the returned state.
     """
 
     def __init__(
         self,
-        iterations: int,
-        n_batches: int,
         samples_per_batch: int,
         *,
-        energy_tol: float = 0.0,
-        occupancies_tol: float = 0.0,
-        sci_solver: Callable[
-            [
-                list[tuple[np.ndarray, np.ndarray]],
-                np.ndarray,
-                np.ndarray,
-                int,
-                tuple[int, int],
-            ],
-            list[SCIResult],
-        ]
-        | None = None,
-        symmetrize_spin: bool = False,
-        max_dim: int | tuple[int, int] | None = None,
-        include_configurations: list[int]
-        | tuple[list[int], list[int]]
-        | np.ndarray
-        | None = None,
-        initial_occupancies: tuple[np.ndarray, np.ndarray] | None = None,
-        callback: Callable[[list[SCIResult]], None] | None = None,
-        max_davidson_cycles: int = 200,
-        tol: float = 1e-12,
-        nroots: int | None = None,
-        spin_sq: float | None = None,
-        carryover_threshold: float | None = None,
-        seed: int | np.random.Generator | None = None,
         output_dir: str | os.PathLike | None = None,
         verbose: int = logger.INFO,
+        **sqd_options: Any,
     ) -> None:
-        self.iterations = iterations
-        self.n_batches = n_batches
         self.samples_per_batch = samples_per_batch
-        self.energy_tol = energy_tol
-        self.occupancies_tol = occupancies_tol
-        self.sci_solver = sci_solver
-        self.symmetrize_spin = symmetrize_spin
-        self.max_dim = max_dim
-        self.include_configurations = include_configurations
-        self.initial_occupancies = initial_occupancies
-        self.callback = callback
-        self.max_davidson_cycles = max_davidson_cycles
-        self.tol = tol
-        self.nroots = nroots
-        self.spin_sq = spin_sq
-        self.carryover_threshold = carryover_threshold
-        self.rng = np.random.default_rng(seed)
+        self.sqd_options = sqd_options
         self.output_dir = None if output_dir is None else Path(output_dir)
         self.verbose = verbose
         self.counts: dict[str, int] | None = None
@@ -285,15 +145,21 @@ class FragmentSQD:
             raise RuntimeError(
                 "FragmentSQD.counts must be set before the kernel is called"
             )
-        neleca, nelecb = nelec
-        spin_sq = self.spin_sq
-        if spin_sq is None:
-            s = abs(neleca - nelecb) / 2
-            spin_sq = s * (s + 1)
         h1 = h1s[0] if np.ndim(h1s) == 3 else h1s
         mo_coeff, h1_mo, h2_mo = fragment_mo_basis(h1, h2, norb, nelec)
 
-        use_carryover = self.carryover_threshold is not None
+        self.sqd_options["seed"] = np.random.default_rng(self.sqd_options.get("seed"))
+        options = self.sqd_options.copy()
+        carryover_threshold = options.get(
+            "carryover_threshold",
+            signature(diagonalize_fermionic_hamiltonian)
+            .parameters["carryover_threshold"]
+            .default,
+        )
+        if carryover_threshold is None:
+            carryover_threshold = np.inf
+        options["carryover_threshold"] = carryover_threshold
+        use_carryover = carryover_threshold != np.inf
         if use_carryover:
             # The orbitals the carried-over strings are expressed in, for mapping
             # them from the previous call.
@@ -307,7 +173,7 @@ class FragmentSQD:
                 self.carryover_strings = (empty, empty)
             self.prev_mo = mo_ref
 
-        include_configurations = self.include_configurations
+        include_configurations = options.get("include_configurations")
         if use_carryover:
             if include_configurations is None:
                 include_configurations = self.carryover_strings
@@ -320,57 +186,49 @@ class FragmentSQD:
                     np.union1d(include_a, self.carryover_strings[0]),
                     np.union1d(include_b, self.carryover_strings[1]),
                 )
+        options["include_configurations"] = include_configurations
 
-        shape = (self.iterations, self.n_batches)
-        self.e_hist = np.zeros(shape)
-        self.s_hist = np.zeros(shape)
-        self.d_hist = np.zeros(shape)
-        self.a_hist = np.zeros(shape)
-        self.b_hist = np.zeros(shape)
-        self.occupancy_hist = np.zeros((self.iterations, 2 * norb))
-
-        def default_sci_solver(ci_strings, h1, h2, norb, nelec):
-            return [
-                solve_sci_nroots(
-                    strings,
-                    h1,
-                    h2,
-                    norb,
-                    nelec,
-                    spin_sq=spin_sq,
-                    nroots=self.nroots,
-                    max_cycle=self.max_davidson_cycles,
-                    tol=self.tol,
-                )
-                for strings in ci_strings
-            ]
-
-        iteration = 0
+        histories = {
+            name: []
+            for name in (
+                "e_hist",
+                "s_hist",
+                "d_hist",
+                "a_hist",
+                "b_hist",
+                "occupancy_hist",
+            )
+        }
+        for name in histories:
+            setattr(
+                self, name, np.empty((0, 2 * norb if name == "occupancy_hist" else 0))
+            )
+        user_callback = options.get("callback")
 
         def callback(results):
-            nonlocal iteration
-            i = iteration
-            iteration += 1
-            for j, result in enumerate(results):
-                state = result.sci_state
-                self.e_hist[i, j] = result.energy
-                self.s_hist[i, j] = state.spin_square()
-                self.a_hist[i, j] = len(state.ci_strs_a)
-                self.b_hist[i, j] = len(state.ci_strs_b)
-                self.d_hist[i, j] = state.amplitudes.size
-
             best = min(results, key=lambda result: result.energy)
-            self.occupancy_hist[i] = np.concatenate(best.orbital_occupancies)
+            rows = {
+                "e_hist": [r.energy for r in results],
+                "s_hist": [r.sci_state.spin_square() for r in results],
+                "a_hist": [len(r.sci_state.ci_strs_a) for r in results],
+                "b_hist": [len(r.sci_state.ci_strs_b) for r in results],
+                "d_hist": [r.sci_state.amplitudes.size for r in results],
+                "occupancy_hist": np.concatenate(best.orbital_occupancies),
+            }
+            for name, row in rows.items():
+                histories[name].append(row)
+                setattr(self, name, np.asarray(histories[name]))
             log.info(
                 "SQD iteration %d: lowest E = %.12g, <S^2> = %.6f, dims = %s",
-                i,
+                len(self.e_hist) - 1,
                 best.energy,
                 best.sci_state.spin_square(),
-                self.d_hist[i].astype(int),
+                self.d_hist[-1],
             )
-            if self.callback is not None:
-                self.callback(results)
+            if user_callback is not None:
+                user_callback(results)
 
+        options["callback"] = callback
         best = diagonalize_fermionic_hamiltonian(
             h1_mo,
             h2_mo,
@@ -378,32 +236,12 @@ class FragmentSQD:
             self.samples_per_batch,
             norb,
             nelec,
-            num_batches=self.n_batches,
-            max_iterations=self.iterations,
-            energy_tol=self.energy_tol,
-            occupancies_tol=self.occupancies_tol,
-            sci_solver=default_sci_solver
-            if self.sci_solver is None
-            else self.sci_solver,
-            symmetrize_spin=self.symmetrize_spin,
-            max_dim=self.max_dim,
-            include_configurations=include_configurations,
-            initial_occupancies=self.initial_occupancies,
-            carryover_threshold=self.carryover_threshold if use_carryover else np.inf,
-            callback=callback,
-            seed=self.rng,
+            **options,
         )
-        for name in (
-            "e_hist",
-            "s_hist",
-            "d_hist",
-            "a_hist",
-            "b_hist",
-            "occupancy_hist",
-        ):
-            setattr(self, name, getattr(self, name)[:iteration].copy())
         if use_carryover:
-            self.carryover_strings = self._carryover(best.sci_state)
+            self.carryover_strings = self._carryover(
+                best.sci_state, carryover_threshold
+            )
             log.info(
                 "SQD carrying over %d alpha, %d beta strings",
                 len(np.unique(self.carryover_strings[0])),
@@ -420,10 +258,10 @@ class FragmentSQD:
             self._save()
         return self.e_tot, self.dm1s, self.dm2
 
-    def _carryover(self, sci_state):
+    def _carryover(self, sci_state, carryover_threshold):
         """Alpha and beta strings of the determinants with ``|amplitude| >= carryover_threshold``."""
         amplitudes = np.abs(sci_state.amplitudes)
-        alpha_idx, beta_idx = np.nonzero(amplitudes >= self.carryover_threshold)
+        alpha_idx, beta_idx = np.nonzero(amplitudes >= carryover_threshold)
         return sci_state.ci_strs_a[alpha_idx], sci_state.ci_strs_b[beta_idx]
 
     def _save(self):

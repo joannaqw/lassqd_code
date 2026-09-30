@@ -9,6 +9,9 @@ with LUCJ circuits (`lassqd.run_lassqd`). Run each script from its own directory
 
 `lassqd_fefe.py`: (10e,10o) per fragment, circuits sampled classically with Aer
 (MPS, 100k shots), up to 50 hybrid cycles with determinant carryover between cycles.
+Its custom `sci_solver.py` solves 10 Davidson roots per batch and retains the first,
+with the fragment's minimum-spin constraint, 200 maximum cycles and `1e-16`
+tolerance. It is passed to `FragmentSQD` through the `sci_solver` option.
 
 - Inputs: `fefe_as.npy` and `as_increase_avas.npy` (initial orbitals). **These are
   not in the repository**; copy them into this directory first.
@@ -22,6 +25,8 @@ Quantum hardware (`ibm_sherbrooke`, 30k shots, fixed qubit layout), then the SQD
 (tPBE) energy. It restarts from `current_orb.npy`. Save an IBM Quantum account with
 `QiskitRuntimeService.save_account(...)` first. Each cycle writes `current_orb.npy`
 and the LAS wave function (orbitals + fragment RDMs) to `RDMS/casdm.h5`.
+Its `sci_solver` is the addon's `solve_sci_batch`, configured with a triplet spin
+target (`spin_sq=2`), 200 maximum Davidson cycles and `1e-12` tolerance.
 
 `pdft_from_rdms.py` (what `run.slurm` runs): the SQD-PDFT energy of the wave
 function saved in `RDMS/casdm.h5`, without new sampling.

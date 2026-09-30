@@ -6,6 +6,7 @@ Each cycle writes the current LAS wave function (orbitals + fragment RDMs) to
 ``RDMS/casdm.h5``, which ``pdft_from_rdms.py`` can reuse.
 """
 
+from functools import partial
 from pathlib import Path
 
 import ffsim
@@ -13,6 +14,7 @@ import numpy as np
 from pyscf import gto, lib, scf
 from pyscf.mcscf import avas
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_addon_sqd.fermion import solve_sci_batch
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2, Session
 
 from lassqd import (
@@ -38,11 +40,10 @@ mo_localized = las.localize_init_guess(([0], [1]), guess_mo_sorted)
 
 solvers = [
     FragmentSQD(
-        iterations=6,
-        n_batches=15,
+        max_iterations=6,
+        num_batches=15,
         samples_per_batch=50,
-        max_davidson_cycles=200,
-        tol=1e-12,
+        sci_solver=partial(solve_sci_batch, spin_sq=2.0, max_cycle=200, tol=1e-12),
     )
     for ifrag in range(las.nfrags)
 ]
@@ -84,5 +85,7 @@ with Session(backend=backend) as session:
         max_cycles=1,
         callback=save_wave_function,
     )
-e_pdft = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_coeff, ot="tPBE")
+e_pdft = lassqd_pdft_energy(
+    las, result.casdm1frs, result.casdm2fr, result.mo_coeff, ot="tPBE"
+)
 print("SQDPDFT energy", e_pdft)

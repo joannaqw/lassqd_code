@@ -5,7 +5,10 @@ from lassqd import FragmentSQD, LASSCFNoSymm, run_lassqd
 
 
 def run(mf, las, mo, **kwargs):
-    solvers = [FragmentSQD(2, 2, 100, seed=0) for _ in range(las.nfrags)]
+    solvers = [
+        FragmentSQD(100, max_iterations=2, num_batches=2, seed=0)
+        for _ in range(las.nfrags)
+    ]
     return run_lassqd(
         las,
         mo,

@@ -1,11 +1,12 @@
+from functools import partial
+
 import numpy as np
 import pytest
 from conftest import full_counts
 from pyscf import fci
-from qiskit_addon_sqd.fermion import SCIResult, solve_sci
+from qiskit_addon_sqd.fermion import SCIResult, solve_sci, solve_sci_batch
 
-from lassqd import FragmentSQD, fragment_hamiltonians, solve_sci_nroots
-from lassqd.basis import fragment_mo_basis
+from lassqd import FragmentSQD, fragment_hamiltonians
 from lassqd.sqd import permute_carryover
 
 
@@ -21,31 +22,61 @@ def fci_energy(norb, nelec, h1, h2, spin_sq):
     return solver.kernel(h1, h2, norb, nelec)[0]
 
 
-def all_strings(norb, nelec):
-    return tuple(fci.cistring.make_strings(range(norb), n) for n in nelec)
+def test_fragment_sqd_defaults_converge_and_carry_over():
+    solver = FragmentSQD(10)
+    h1 = np.diag([0.0, 1.0])
+    h2 = np.zeros((2,) * 4)
+    solver.counts = {"0101": 10}
+    e1, _, _ = solver(2, (1, 1), 0.0, h1, h2)
+    assert np.isclose(e1, 0.0)
+    assert solver.e_hist.shape == (2, 1)
+    assert solver.occupancy_hist.shape == (2, 4)
+    assert all(np.array_equal(strings, [1]) for strings in solver.carryover_strings)
+
+    # Default carryover retains the ground state when only an excited state is sampled.
+    solver.counts = {"1010": 10}
+    e2, _, _ = solver(2, (1, 1), 0.0, h1, h2)
+    assert np.isclose(e2, e1)
+    assert solver.e_hist.shape == (2, 1)
+    assert np.all(solver.d_hist == 4)
 
 
-@pytest.mark.parametrize("nroots", [1, 3])
-def test_solve_sci_nroots(fragment, nroots):
-    norb, nelec, _, h1s, h2 = fragment
-    _, h1, h2 = fragment_mo_basis(h1s[0], h2, norb, nelec)
-    strings = all_strings(norb, nelec)
-    ref = solve_sci(strings, h1, h2, norb, nelec, spin_sq=0.75)
-    assert (
-        solve_sci_nroots(strings, h1, h2, norb, nelec, spin_sq=0.75).energy
-        == ref.energy
-    )
-    multi = solve_sci_nroots(strings, h1, h2, norb, nelec, spin_sq=0.75, nroots=nroots)
-    assert np.isclose(multi.energy, ref.energy)
-    assert np.isclose(multi.sci_state.spin_square(), 0.75)
+@pytest.mark.parametrize("carryover_threshold", [None, np.inf])
+def test_fragment_sqd_random_stream_advances_between_calls(carryover_threshold):
+    solvers = [
+        FragmentSQD(
+            1,
+            num_batches=12,
+            max_iterations=1,
+            carryover_threshold=carryover_threshold,
+            seed=seed,
+        )
+        for seed in (0, np.random.default_rng(0))
+    ]
+    h1 = np.diag([0.0, 1.0])
+    h2 = np.zeros((2,) * 4)
+    previous = None
+    for _ in range(3):
+        for solver in solvers:
+            solver.counts = {"0101": 10, "1010": 10}
+            solver(2, (1, 1), 0.0, h1, h2)
+            assert solver.carryover_strings is None
+        # Integer seeds and supplied generators yield the same sequence of runs.
+        assert np.array_equal(solvers[0].e_hist, solvers[1].e_hist)
+        if previous is not None:
+            assert not np.array_equal(solvers[0].e_hist, previous)
+        previous = solvers[0].e_hist.copy()
 
 
 @pytest.mark.parametrize("carryover_threshold", [None, 1e-3])
-@pytest.mark.parametrize("nroots", [None, 1, 3])
-def test_fragment_sqd_full_space_is_exact(fragment, carryover_threshold, nroots):
+def test_fragment_sqd_full_space_is_exact(fragment, carryover_threshold):
     norb, nelec, h0, h1s, h2 = fragment
     solver = FragmentSQD(
-        2, 2, 50, seed=0, carryover_threshold=carryover_threshold, nroots=nroots
+        50,
+        max_iterations=2,
+        num_batches=2,
+        seed=0,
+        carryover_threshold=carryover_threshold,
     )
     solver.counts = full_counts(norb, nelec)
     # Wrong electron counts must be postselected initially and recovered later.
@@ -80,7 +111,14 @@ def test_fragment_sqd_returns_best_across_iterations(carryover_threshold):
     h0 = 2.0
     h1 = np.diag([0.0, 1.0])
     h2 = np.zeros((2,) * 4)
-    solver = FragmentSQD(4, 2, 1, seed=0, carryover_threshold=carryover_threshold)
+    solver = FragmentSQD(
+        1,
+        max_iterations=4,
+        num_batches=2,
+        energy_tol=0.0,
+        seed=0,
+        carryover_threshold=carryover_threshold,
+    )
     solver.counts = {"0101": 10, "1010": 10}
     e, dm1s, dm2 = solver(2, (1, 1), h0, h1, h2)
 
@@ -107,7 +145,12 @@ def test_fragment_sqd_returns_best_across_iterations(carryover_threshold):
 def test_fragment_sqd_carryover_persists_between_calls(fragment, tmp_path):
     norb, nelec, h0, h1s, h2 = fragment
     solver = FragmentSQD(
-        1, 2, 50, seed=0, carryover_threshold=1e-3, output_dir=tmp_path
+        50,
+        max_iterations=1,
+        num_batches=2,
+        seed=0,
+        carryover_threshold=1e-3,
+        output_dir=tmp_path,
     )
     solver.counts = full_counts(norb, nelec)
     e1, _, _ = solver(norb, nelec, h0, h1s, h2)
@@ -135,9 +178,9 @@ def test_fragment_sqd_convergence_and_callback(
         seen.append(results)
 
     solver = FragmentSQD(
-        5,
-        2,
         10,
+        max_iterations=5,
+        num_batches=2,
         energy_tol=energy_tol,
         occupancies_tol=occupancies_tol,
         callback=callback,
@@ -159,6 +202,14 @@ def test_fragment_sqd_convergence_and_callback(
     assert len(seen) == expected_iterations
     assert solver.e_hist.shape == (expected_iterations, 2)
 
+    # Options can change between calls, including the dimensions of the histories.
+    solver.sqd_options.update(max_iterations=1, num_batches=3)
+    seen.clear()
+    solver(2, (1, 1), 3.0, h1, np.zeros((2,) * 4))
+    assert len(seen) == 1
+    assert solver.e_hist.shape == (1, 3)
+    assert solver.occupancy_hist.shape == (1, 4)
+
 
 def test_fragment_sqd_custom_solver_without_rdms(fragment):
     norb, nelec, h0, h1s, h2 = fragment
@@ -177,15 +228,11 @@ def test_fragment_sqd_custom_solver_without_rdms(fragment):
         return results
 
     solver = FragmentSQD(
-        2,
-        3,
         50,
+        max_iterations=2,
+        num_batches=3,
         sci_solver=sci_solver,
         callback=callbacks.append,
-        # These default-solver settings must not override the custom solver.
-        nroots=100,
-        spin_sq=100.0,
-        max_davidson_cycles=0,
     )
     solver.counts = full_counts(norb, nelec)
     e, dm1s, dm2 = solver(norb, nelec, h0, h1s, h2)
@@ -201,14 +248,42 @@ def test_fragment_sqd_custom_solver_without_rdms(fragment):
     assert np.allclose(solver.s_hist, 0.75)
 
 
+@pytest.mark.parametrize("spin_sq,energy", [(None, 1.05), (0.0, 1.15)])
+def test_fragment_sqd_spin_constraint_is_configured_through_sci_solver(spin_sq, energy):
+    # Positive exchange favors a triplet. The addon default should find it;
+    # a configured solver can instead target the higher-energy singlet.
+    h1 = np.diag([0.0, 0.1])
+    h2 = np.zeros((2,) * 4)
+    h2[0, 0, 0, 0] = h2[1, 1, 1, 1] = 2.0
+    h2[0, 0, 1, 1] = h2[1, 1, 0, 0] = 1.0
+    for index in [(0, 1, 0, 1), (0, 1, 1, 0), (1, 0, 0, 1), (1, 0, 1, 0)]:
+        h2[index] = 0.05
+    sci_solver = (
+        None
+        if spin_sq is None
+        else partial(solve_sci_batch, spin_sq=spin_sq, max_cycle=200, tol=1e-12)
+    )
+    solver = FragmentSQD(4, max_iterations=1, sci_solver=sci_solver)
+    solver.counts = full_counts(2, (1, 1))
+    e, dm1s, dm2 = solver(2, (1, 1), 0.0, h1, h2)
+    assert np.isclose(e, energy)
+    assert np.allclose(solver.s_hist, 2.0 if spin_sq is None else spin_sq)
+    assert np.isclose(
+        e, np.einsum("ij,sij->", h1, dm1s) + 0.5 * np.einsum("ijkl,ijkl", h2, dm2)
+    )
+
+
 def test_fragment_sqd_initial_occupancies_recover_entirely_noisy_counts():
     h1 = np.diag([0.0, 1.0])
     h2 = np.zeros((2,) * 4)
-    solver = FragmentSQD(1, 1, 10, seed=0)
+    solver = FragmentSQD(10, max_iterations=1, seed=0)
     solver.counts = {"0000": 10, "1111": 10}
     with pytest.raises(ValueError, match="valid bitstrings"):
         solver(2, (1, 1), 0.0, h1, h2)
-    solver.initial_occupancies = (np.array([1.0, 0.0]), np.array([1.0, 0.0]))
+    solver.sqd_options["initial_occupancies"] = (
+        np.array([1.0, 0.0]),
+        np.array([1.0, 0.0]),
+    )
     e, dm1s, _ = solver(2, (1, 1), 0.0, h1, h2)
     assert np.isclose(e, 0.0)
     assert np.allclose(dm1s, [np.diag([1.0, 0.0])] * 2)
@@ -216,7 +291,7 @@ def test_fragment_sqd_initial_occupancies_recover_entirely_noisy_counts():
 
 @pytest.mark.parametrize("symmetrize_spin", [False, True])
 def test_fragment_sqd_spin_symmetry(symmetrize_spin):
-    solver = FragmentSQD(1, 1, 1, symmetrize_spin=symmetrize_spin)
+    solver = FragmentSQD(1, max_iterations=1, symmetrize_spin=symmetrize_spin)
     solver.counts = {"1001": 10}
     e, _, _ = solver(2, (1, 1), 0.0, np.diag([0.0, 1.0]), np.zeros((2,) * 4))
     assert np.isclose(e, 0.0 if symmetrize_spin else 1.0)
@@ -232,10 +307,10 @@ def test_fragment_sqd_included_configurations_and_carryover(
 ):
     h1 = np.diag([0.0, 1.0, 2.0])
     h2 = np.zeros((3,) * 4)
-    solver = FragmentSQD(1, 1, 1, carryover_threshold=carryover_threshold)
+    solver = FragmentSQD(1, max_iterations=1, carryover_threshold=carryover_threshold)
     solver.counts = {"010010": 10}
     solver(3, (1, 1), 0.0, h1, h2)
-    solver.include_configurations = include
+    solver.sqd_options["include_configurations"] = include
     solver.counts = {"100100": 10}
     e, _, _ = solver(3, (1, 1), 0.0, h1, h2)
     separate_spins = isinstance(include, tuple)
@@ -251,7 +326,13 @@ def test_fragment_sqd_included_configurations_and_carryover(
 
 @pytest.mark.parametrize("max_dim,expected_dims", [(1, (1, 1)), ((2, 1), (2, 1))])
 def test_fragment_sqd_max_dim(max_dim, expected_dims):
-    solver = FragmentSQD(2, 2, 10, max_dim=max_dim, include_configurations=[1, 2, 4])
+    solver = FragmentSQD(
+        10,
+        max_iterations=2,
+        num_batches=2,
+        max_dim=max_dim,
+        include_configurations=[1, 2, 4],
+    )
     solver.counts = full_counts(3, (1, 1))
     e, _, _ = solver(3, (1, 1), 0.0, np.diag([0.0, 1.0, 2.0]), np.zeros((3,) * 4))
     assert np.isclose(e, 0.0)
@@ -263,7 +344,7 @@ def test_fragment_sqd_max_dim(max_dim, expected_dims):
 def test_fragment_sqd_requires_counts(fragment):
     norb, nelec, h0, h1s, h2 = fragment
     with pytest.raises(RuntimeError):
-        FragmentSQD(1, 1, 10)(norb, nelec, h0, h1s, h2)
+        FragmentSQD(10)(norb, nelec, h0, h1s, h2)
 
 
 def test_permute_carryover():

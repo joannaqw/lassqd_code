@@ -11,6 +11,7 @@ from pyscf import gto, lib, scf
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_aer import AerSimulator
 from qiskit_aer.primitives import SamplerV2
+from sci_solver import solve_sci_batch
 
 from lassqd import FragmentSQD, LASSCFNoSymm, run_lassqd
 
@@ -30,12 +31,10 @@ mo_localized = las.localize_init_guess(([0], [1]), guess_mo_sorted)
 
 solvers = [
     FragmentSQD(
-        iterations=6,
-        n_batches=15,
+        max_iterations=6,
+        num_batches=15,
         samples_per_batch=170,
-        max_davidson_cycles=200,
-        tol=1e-16,
-        nroots=10,
+        sci_solver=solve_sci_batch,
         carryover_threshold=1e-3,
         output_dir=f"data_carryover_frag{ifrag}",
     )
@@ -62,4 +61,6 @@ result = run_lassqd(
     conv_tol=1e-5,
     callback=save_orbitals,
 )
-print(f"LASSQD energy {result.e_tot:.10f} ({'' if result.converged else 'not '}converged)")
+print(
+    f"LASSQD energy {result.e_tot:.10f} ({'' if result.converged else 'not '}converged)"
+)

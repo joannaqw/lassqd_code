@@ -21,20 +21,31 @@ each fragment's counts is the fragment solver for one LASSCF orbital step.
 
 - `lassqd.las`: `LASSCFNoSymm`, `fragment_hamiltonians`, `set_fragment_kernels` (mrh interface)
 - `lassqd.circuits`: `lucj_circuit` (CCSD-initialized, linear-method-optimized LUCJ), `glue_circuits` (one classical register per fragment)
-- `lassqd.sqd`: `FragmentSQD`, the SQD fragment kernel (configuration recovery, optional determinant carryover between cycles), and `solve_sci_nroots`
+- `lassqd.sqd`: `FragmentSQD`, the SQD fragment kernel (configuration recovery, optional determinant carryover between cycles)
 - `lassqd.hybrid`: `run_lassqd`, the hybrid loop; it samples with any qiskit SamplerV2 primitive (Aer, IBM Runtime, ...)
 - `lassqd.pdft`: `lassqd_pdft_energy` (LAS-PDFT on the SQD RDMs), `save_rdms`, `load_rdms`
 
 ```python
+from functools import partial
+
 import ffsim
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_addon_sqd.fermion import solve_sci_batch
 from qiskit_aer import AerSimulator
 from qiskit_aer.primitives import SamplerV2
 
 from lassqd import FragmentSQD, LASSCFNoSymm, lassqd_pdft_energy, run_lassqd
 
 las = LASSCFNoSymm(mf, (5, 5), ((4, 2), (2, 4)), spin_sub=(3, 3))
-solvers = [FragmentSQD(iterations=6, n_batches=15, samples_per_batch=50) for _ in range(las.nfrags)]
+solvers = [
+    FragmentSQD(
+        samples_per_batch=50,
+        max_iterations=6,
+        num_batches=15,
+        sci_solver=partial(solve_sci_batch, spin_sq=2.0, max_cycle=200, tol=1e-12),
+    )
+    for _ in range(las.nfrags)
+]
 sampler = SamplerV2(options={"backend_options": {"method": "matrix_product_state"}})
 pass_manager = generate_preset_pass_manager(
     backend=AerSimulator(method="matrix_product_state"), optimization_level=3
@@ -45,8 +56,8 @@ e_pdft = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_co
 ```
 
 `FragmentSQD` uses `qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`
-for configuration recovery and diagonalization. It runs up to the requested number of
-`iterations`, using the best batch's occupancies for recovery, and returns the
+for configuration recovery and diagonalization. It runs up to `max_iterations`
+rounds, using the best batch's occupancies for recovery, and returns the
 energy and RDMs of the lowest-energy batch across all iterations. Optional
 determinant carryover is handled by the addon within a call and by `FragmentSQD`
 between calls. SQD sees only the alpha one-electron Hamiltonian `h1s[0]`.
@@ -54,29 +65,25 @@ between calls. SQD sees only the alpha one-electron Hamiltonian `h1s[0]`.
 one consistent LAS wave function (RDMs in those orbitals' active space), which is
 what LAS-PDFT needs.
 
-All options of `diagonalize_fermionic_hamiltonian` are exposed by `FragmentSQD`:
+`FragmentSQD(samples_per_batch, *, output_dir=None, verbose=logger.INFO, **sqd_options)`
+passes SQD options to `diagonalize_fermionic_hamiltonian` using the addon's names
+and defaults. Only `samples_per_batch` is required; `output_dir` and `verbose`
+configure the wrapper. The Hamiltonian, orbital and electron counts come from the
+fragment kernel arguments; the sampled `BitArray` is built from `solver.counts`.
 
-| Addon option | `FragmentSQD` argument |
-| --- | --- |
-| `max_iterations` | `iterations` |
-| `num_batches` | `n_batches` |
-| `energy_tol`, `occupancies_tol` | Same names; both default to `0.0` to run all iterations |
-| `sci_solver`, `callback` | Same names; custom batch solver and per-iteration callback |
-| `symmetrize_spin`, `max_dim` | Same names; spin symmetry and limits on spin-sector dimensions |
-| `include_configurations`, `initial_occupancies` | Same names; expressed in the current fragment ROHF basis |
-| `carryover_threshold`, `seed` | Same names; carryover defaults to `None` (disabled) |
+The addon defaults currently use one batch, at most 100 iterations, convergence
+tolerances `energy_tol=1e-8` and `occupancies_tol=1e-5`, and
+`carryover_threshold=1e-4`. Carryover also persists between fragment calls.
+Set `carryover_threshold=None` (or `np.inf`) to disable it. Set either convergence
+tolerance to `0.0` to run all requested iterations.
 
-`samples_per_batch` is also passed directly. The Hamiltonian, orbital and electron
-counts come from the fragment kernel arguments; the sampled `BitArray` is built
-from `solver.counts`.
-
-For example, enable early convergence and limit each spin sector to 100 strings:
+For example, use five batches and limit each spin sector to 100 strings:
 
 ```python
 solver = FragmentSQD(
-    iterations=100,
-    n_batches=5,
     samples_per_batch=50,
+    max_iterations=100,
+    num_batches=5,
     energy_tol=1e-8,
     occupancies_tol=1e-5,
     max_dim=100,
@@ -85,12 +92,27 @@ solver = FragmentSQD(
 ```
 
 Both convergence criteria must be satisfied to stop early. Histories contain only
-completed iterations. A custom `callback(results)` runs after internal history
-recording and receives the addon's list of `SCIResult` objects, with energies
+completed iterations. Options are stored in `solver.sqd_options` and can be
+updated between calls, for example `solver.sqd_options["max_dim"] = 200`. The
+`seed` option becomes a persistent NumPy generator on use, so repeated calls
+advance the same random stream. A custom `callback(results)` runs after internal
+history recording and receives the addon's list of `SCIResult` objects, with energies
 excluding `h0` and states in the fragment ROHF basis. A custom `sci_solver` accepts
 `(ci_strings, h1, h2, norb, nelec)` and returns that list; it controls its own spin
 constraint and Davidson settings. Explicit configurations are merged with
 carryover from the preceding call before the addon applies `max_dim`.
+Explicit configurations and `initial_occupancies` use the current fragment ROHF basis.
+
+Code using the previous constructor should replace `iterations` with
+`max_iterations` and `n_batches` with `num_batches`, and pass these as keyword
+arguments. Early stopping and carryover are now enabled by default.
+
+With `sci_solver=None`, the addon uses `solve_sci_batch` with its default Davidson
+settings and no total-spin penalty. To set a spin target or change Davidson
+settings, pass a configured solver such as
+`partial(solve_sci_batch, spin_sq=2.0, max_cycle=200, tol=1e-12)`, as above.
+These settings belong to the batch solver; `energy_tol` and `occupancies_tol`
+control convergence of configuration recovery.
 
 ## Installation
 
