@@ -62,7 +62,6 @@ def lucj_circuit(
         n_reps=n_reps,
         interaction_pairs=interaction_pairs,
         optimize=True,
-        options={"maxiter": 100},
     )
 
     qubits = QuantumRegister(2 * norb, name="q")
