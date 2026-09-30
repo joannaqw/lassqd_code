@@ -1,0 +1,62 @@
+"""Multiple-root SCI batch solver used by the FeFe simulator example."""
+
+import numpy as np
+from pyscf import fci
+from qiskit_addon_sqd.fermion import SCIResult, SCIState
+
+
+def solve_sci_batch(
+    ci_strings: list[tuple[np.ndarray, np.ndarray]],
+    h1: np.ndarray,
+    h2: np.ndarray,
+    norb: int,
+    nelec: tuple[int, int],
+    *,
+    nroots: int = 10,
+    max_cycle: int = 200,
+    tol: float = 1e-16,
+) -> list[SCIResult]:
+    """Solve several Davidson roots per batch and return only the first root.
+
+    This preserves the FeFe example's solver settings. The spin penalty targets
+    ``S(S + 1)`` with ``S = abs(neleca - nelecb) / 2``. The addon's RDM processing
+    assumes one eigenvector, so multiple roots are handled directly with PySCF.
+    Energies are recomputed without the spin penalty or constant energy term.
+    """
+    spin = abs(nelec[0] - nelec[1]) / 2
+    results = []
+    for strings in ci_strings:
+        myci = fci.addons.fix_spin_(fci.selected_ci.SelectedCI(), ss=spin * (spin + 1))
+        _, sci_vecs = fci.selected_ci.kernel_fixed_space(
+            myci,
+            h1,
+            h2,
+            norb,
+            nelec,
+            ci_strs=strings,
+            nroots=nroots,
+            max_cycle=max_cycle,
+            tol=tol,
+        )
+        sci_vec = sci_vecs if nroots == 1 else sci_vecs[0]
+        dm1s = myci.make_rdm1s(sci_vec, norb, nelec)
+        dm1 = myci.make_rdm1(sci_vec, norb, nelec)
+        dm2 = myci.make_rdm2(sci_vec, norb, nelec)
+        energy = np.einsum("pr,pr->", dm1, h1) + 0.5 * np.einsum("prqs,prqs->", dm2, h2)
+        state = SCIState(
+            amplitudes=np.array(sci_vec),
+            ci_strs_a=sci_vec._strs[0],
+            ci_strs_b=sci_vec._strs[1],
+            norb=norb,
+            nelec=nelec,
+        )
+        results.append(
+            SCIResult(
+                energy,
+                state,
+                orbital_occupancies=(np.diagonal(dm1s[0]), np.diagonal(dm1s[1])),
+                rdm1=dm1,
+                rdm2=dm2,
+            )
+        )
+    return results
