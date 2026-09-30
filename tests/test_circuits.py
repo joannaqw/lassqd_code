@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from qiskit import QuantumCircuit
 from qiskit_aer import AerSimulator
 from qiskit_aer.primitives import SamplerV2
@@ -25,7 +24,6 @@ def test_glue_and_sample_recovers_each_fragment():
 
 
 def test_lucj_circuit_conserves_particle_number(h6):
-    pytest.importorskip("ffsim")
     _, las, mo = h6
     h0, h1s, h2 = fragment_hamiltonians(las, mo)[0]
     norb, (neleca, nelecb) = las.ncas_sub[0], las.nelecas_sub[0]
