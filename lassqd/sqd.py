@@ -2,6 +2,7 @@
 
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -126,7 +127,7 @@ class FragmentSQD:
     does this).
 
     Each call rotates the Hamiltonian to the fragment's ROHF orbitals and runs
-    ``iterations`` rounds of self-consistent configuration recovery, with
+    up to ``iterations`` rounds of self-consistent configuration recovery, with
     ``n_batches`` subsampled batches per round, using the addon's
     :func:`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`. Recovery
     uses the lowest-energy batch's occupancies from the preceding round. The
@@ -142,14 +143,44 @@ class FragmentSQD:
 
     Attributes set by each call: ``e_hist``, ``d_hist`` (subspace dimension),
     ``a_hist``/``b_hist`` (alpha/beta string counts), ``s_hist`` (<S^2>), all of
-    shape ``(iterations, n_batches)``; ``occupancy_hist`` (the lowest-energy
-    batch's occupancies per round, alpha then beta); ``e_tot``; ``dm1s`` and
-    ``dm2`` in the LAS basis; ``sci_state`` in the fragment ROHF basis.
+    shape ``(completed_iterations, n_batches)``; ``occupancy_hist`` (the lowest-energy
+    batch's occupancies per round, alpha then beta, shape
+    ``(completed_iterations, 2 * norb)``); ``e_tot``; ``dm1s`` and ``dm2`` in the
+    LAS basis; ``sci_state`` in the fragment ROHF basis.
 
     Args:
-        iterations: Rounds of configuration recovery per call.
-        n_batches: Subsampled batches per round.
+        iterations: Maximum rounds of configuration recovery per call; maps to
+            the addon's ``max_iterations``.
+        n_batches: Subsampled batches per round; maps to the addon's ``num_batches``.
         samples_per_batch: Samples drawn for each batch.
+        energy_tol: Configuration-recovery energy convergence tolerance. Both
+            energy and occupancies must converge to stop early. Defaults to zero
+            to run all requested iterations.
+        occupancies_tol: Configuration-recovery occupancy convergence tolerance
+            (maximum absolute change). Defaults to zero, disabling early stopping.
+        sci_solver: Custom batch solver with signature
+            ``(ci_strings, h1, h2, norb, nelec) -> list[SCIResult]``, using the
+            fragment ROHF basis. None uses :func:`solve_sci_nroots` on each batch.
+            A custom solver controls its own spin constraint and Davidson settings;
+            ``spin_sq``, ``nroots``, ``max_davidson_cycles`` and ``tol`` apply only
+            to the default solver. Missing RDMs are computed from the returned state.
+        symmetrize_spin: Merge alpha and beta strings for spin-exchange symmetry.
+            Requires equal alpha and beta electron counts.
+        max_dim: Maximum number of strings in each spin sector, either a single
+            limit or ``(max_dim_a, max_dim_b)``; None means unlimited. The total
+            subspace dimension is at most ``max_dim_a * max_dim_b``.
+        include_configurations: Single-spin determinant strings to include in
+            every batch, either one list/array for both spins or an alpha/beta
+            pair of lists. Express these in the current fragment ROHF basis.
+            They are merged with carryover from previous calls and subject to
+            the addon's ``max_dim`` truncation.
+        initial_occupancies: Initial alpha/beta orbital occupancies in the current
+            fragment ROHF basis, used at the start of each call. None starts with
+            postselection; an explicit guess allows recovery of entirely noisy
+            counts with no valid sampled configurations.
+        callback: Called with ``list[SCIResult]`` after each recovery round,
+            after recording the internal histories. Energies exclude ``h0`` and
+            states are in the fragment ROHF basis, as in the addon callback.
         max_davidson_cycles: Maximum Davidson iterations per batch.
         tol: Davidson convergence tolerance.
         nroots: Number of Davidson roots; see :func:`solve_sci_nroots`.
@@ -169,6 +200,27 @@ class FragmentSQD:
         n_batches: int,
         samples_per_batch: int,
         *,
+        energy_tol: float = 0.0,
+        occupancies_tol: float = 0.0,
+        sci_solver: Callable[
+            [
+                list[tuple[np.ndarray, np.ndarray]],
+                np.ndarray,
+                np.ndarray,
+                int,
+                tuple[int, int],
+            ],
+            list[SCIResult],
+        ]
+        | None = None,
+        symmetrize_spin: bool = False,
+        max_dim: int | tuple[int, int] | None = None,
+        include_configurations: list[int]
+        | tuple[list[int], list[int]]
+        | np.ndarray
+        | None = None,
+        initial_occupancies: tuple[np.ndarray, np.ndarray] | None = None,
+        callback: Callable[[list[SCIResult]], None] | None = None,
         max_davidson_cycles: int = 200,
         tol: float = 1e-12,
         nroots: int | None = None,
@@ -181,6 +233,14 @@ class FragmentSQD:
         self.iterations = iterations
         self.n_batches = n_batches
         self.samples_per_batch = samples_per_batch
+        self.energy_tol = energy_tol
+        self.occupancies_tol = occupancies_tol
+        self.sci_solver = sci_solver
+        self.symmetrize_spin = symmetrize_spin
+        self.max_dim = max_dim
+        self.include_configurations = include_configurations
+        self.initial_occupancies = initial_occupancies
+        self.callback = callback
         self.max_davidson_cycles = max_davidson_cycles
         self.tol = tol
         self.nroots = nroots
@@ -247,6 +307,20 @@ class FragmentSQD:
                 self.carryover_strings = (empty, empty)
             self.prev_mo = mo_ref
 
+        include_configurations = self.include_configurations
+        if use_carryover:
+            if include_configurations is None:
+                include_configurations = self.carryover_strings
+            else:
+                if isinstance(include_configurations, tuple):
+                    include_a, include_b = include_configurations
+                else:
+                    include_a = include_b = include_configurations
+                include_configurations = (
+                    np.union1d(include_a, self.carryover_strings[0]),
+                    np.union1d(include_b, self.carryover_strings[1]),
+                )
+
         shape = (self.iterations, self.n_batches)
         self.e_hist = np.zeros(shape)
         self.s_hist = np.zeros(shape)
@@ -255,7 +329,7 @@ class FragmentSQD:
         self.b_hist = np.zeros(shape)
         self.occupancy_hist = np.zeros((self.iterations, 2 * norb))
 
-        def sci_solver(ci_strings, h1, h2, norb, nelec):
+        def default_sci_solver(ci_strings, h1, h2, norb, nelec):
             return [
                 solve_sci_nroots(
                     strings,
@@ -294,6 +368,8 @@ class FragmentSQD:
                 best.sci_state.spin_square(),
                 self.d_hist[i].astype(int),
             )
+            if self.callback is not None:
+                self.callback(results)
 
         best = diagonalize_fermionic_hamiltonian(
             h1_mo,
@@ -304,16 +380,28 @@ class FragmentSQD:
             nelec,
             num_batches=self.n_batches,
             max_iterations=self.iterations,
-            # Keep the requested number of rounds and the fixed history shapes.
-            energy_tol=0.0,
-            occupancies_tol=0.0,
-            sci_solver=sci_solver,
-            symmetrize_spin=False,
-            include_configurations=self.carryover_strings if use_carryover else None,
+            energy_tol=self.energy_tol,
+            occupancies_tol=self.occupancies_tol,
+            sci_solver=default_sci_solver
+            if self.sci_solver is None
+            else self.sci_solver,
+            symmetrize_spin=self.symmetrize_spin,
+            max_dim=self.max_dim,
+            include_configurations=include_configurations,
+            initial_occupancies=self.initial_occupancies,
             carryover_threshold=self.carryover_threshold if use_carryover else np.inf,
             callback=callback,
             seed=self.rng,
         )
+        for name in (
+            "e_hist",
+            "s_hist",
+            "d_hist",
+            "a_hist",
+            "b_hist",
+            "occupancy_hist",
+        ):
+            setattr(self, name, getattr(self, name)[:iteration].copy())
         if use_carryover:
             self.carryover_strings = self._carryover(best.sci_state)
             log.info(
@@ -324,7 +412,10 @@ class FragmentSQD:
 
         self.sci_state = best.sci_state
         self.e_tot = best.energy + h0
-        self.dm1s, self.dm2 = from_mo(mo_coeff, best.sci_state.rdm(rank=1), best.rdm2)
+        rdm2 = best.rdm2
+        if rdm2 is None:
+            rdm2 = best.sci_state.rdm(rank=2, spin_summed=True)
+        self.dm1s, self.dm2 = from_mo(mo_coeff, best.sci_state.rdm(rank=1), rdm2)
         if self.output_dir is not None:
             self._save()
         return self.e_tot, self.dm1s, self.dm2

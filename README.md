@@ -45,7 +45,7 @@ e_pdft = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_co
 ```
 
 `FragmentSQD` uses `qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`
-for configuration recovery and diagonalization. It runs the requested number of
+for configuration recovery and diagonalization. It runs up to the requested number of
 `iterations`, using the best batch's occupancies for recovery, and returns the
 energy and RDMs of the lowest-energy batch across all iterations. Optional
 determinant carryover is handled by the addon within a call and by `FragmentSQD`
@@ -53,6 +53,44 @@ between calls. SQD sees only the alpha one-electron Hamiltonian `h1s[0]`.
 `result.mo_coeff` with `result.casdm1frs`/`result.casdm2fr` is
 one consistent LAS wave function (RDMs in those orbitals' active space), which is
 what LAS-PDFT needs.
+
+All options of `diagonalize_fermionic_hamiltonian` are exposed by `FragmentSQD`:
+
+| Addon option | `FragmentSQD` argument |
+| --- | --- |
+| `max_iterations` | `iterations` |
+| `num_batches` | `n_batches` |
+| `energy_tol`, `occupancies_tol` | Same names; both default to `0.0` to run all iterations |
+| `sci_solver`, `callback` | Same names; custom batch solver and per-iteration callback |
+| `symmetrize_spin`, `max_dim` | Same names; spin symmetry and limits on spin-sector dimensions |
+| `include_configurations`, `initial_occupancies` | Same names; expressed in the current fragment ROHF basis |
+| `carryover_threshold`, `seed` | Same names; carryover defaults to `None` (disabled) |
+
+`samples_per_batch` is also passed directly. The Hamiltonian, orbital and electron
+counts come from the fragment kernel arguments; the sampled `BitArray` is built
+from `solver.counts`.
+
+For example, enable early convergence and limit each spin sector to 100 strings:
+
+```python
+solver = FragmentSQD(
+    iterations=100,
+    n_batches=5,
+    samples_per_batch=50,
+    energy_tol=1e-8,
+    occupancies_tol=1e-5,
+    max_dim=100,
+    seed=0,
+)
+```
+
+Both convergence criteria must be satisfied to stop early. Histories contain only
+completed iterations. A custom `callback(results)` runs after internal history
+recording and receives the addon's list of `SCIResult` objects, with energies
+excluding `h0` and states in the fragment ROHF basis. A custom `sci_solver` accepts
+`(ci_strings, h1, h2, norb, nelec)` and returns that list; it controls its own spin
+constraint and Davidson settings. Explicit configurations are merged with
+carryover from the preceding call before the addon applies `max_dim`.
 
 ## Installation
 
