@@ -1,0 +1,1008 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=25mm]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\definecolor{navy}{HTML}{183B56}
+\definecolor{bluefill}{HTML}{EAF2F8}
+\definecolor{greenfill}{HTML}{EAF5EC}
+\definecolor{accent}{HTML}{B4501F}
+\definecolor{accentfill}{HTML}{FBEDE4}
+\hypersetup{colorlinks=true,linkcolor=navy,urlcolor=navy,
+  pdftitle={LASSQD with QCSC Prefect},
+  pdfsubject={LASSQD with one node per batch using SQD's collective interface}}
+\setlist{itemsep=3pt,topsep=5pt,leftmargin=*}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+\setlength{\emergencystretch}{2em}
+\clubpenalty=10000
+\widowpenalty=10000
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\tikzset{
+  box/.style={draw=navy,rounded corners=2pt,align=center,
+    font=\small,inner sep=6pt,fill=bluefill},
+  worker/.style={box,fill=greenfill},
+  arrow/.style={-{Stealth[length=2mm]},thick,draw=navy}
+}
+
+\title{\textbf{LASSQD with QCSC Prefect}}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-2em}
+
+\section{The LASSQD library}
+\label{sec:library}
+
+LASSQD uses sample-based quantum diagonalization (SQD) to solve the fragments
+of a localized active space (LAS) calculation. Quantum circuits provide samples;
+classical fragment solves return reduced density matrices (RDMs), which mrh's
+RDM-based LASSCF uses to update the orbitals.
+
+The library consists of stage functions that map records to records. One
+macrocycle has four stages:
+\begin{enumerate}
+  \item \textbf{Capture.} \code{capture_embedding} enters mrh with temporary
+  callbacks that record every fragment's Hamiltonian at the orbitals and
+  starting RDMs of a \code{LASState}, then stops mrh before anything is solved.
+  It also computes each fragment's ROHF sampling basis and the integrals in that
+  basis, once. The first macrocycle starts from \code{initial_state}, mrh's
+  initial-guess RDMs.
+  \item \textbf{Sample.} \code{build_circuits} calls a caller-supplied builder
+  for each fragment and groups the circuits, gluing the fragments of a group
+  into one circuit. \code{submit_circuits} submits all or some circuits in one
+  sampler job, and \code{collect_samples} splits the pub results, possibly from
+  several jobs, into per-fragment counts.
+  \item \textbf{Solve.} \code{solve_fragments} runs \code{FragmentSQD} on each
+  fragment outside mrh, independently of the other fragments: configuration
+  recovery and batched selected-CI solves, returning the lowest-energy batch's
+  energy and RDMs across recovery rounds.
+  \item \textbf{Update orbitals.} \code{update_orbitals} checks that each result
+  was solved for the captured fragment problem, then re-enters mrh at the same
+  starting RDMs with callbacks that return the stored results. mrh computes the
+  coupled LAS energy and takes one orbital macrostep.
+\end{enumerate}
+
+The stages exchange records: \code{LASState} (orbitals and fragment RDMs),
+\code{Embedding} and \code{Fragment} (the captured fragment problems with their
+sampling bases), \code{FragmentCircuits} (the compiled circuits, stored as QPY,
+and the register holding each fragment's measurements), \code{FragmentSamples}
+(counts and the embedding they were sampled from), \code{FragmentResult} (one
+fragment's energy, LAS-basis RDMs and best SCI state), and \code{SQDState} (a
+fragment solver's random-generator state, carryover strings and their orbital
+basis). Every record is saved to and loaded from HDF5 with a format version.
+The records module imports only NumPy and h5py; \code{FragmentCircuits} and
+\code{collect_samples} also need Qiskit. A QPU gateway therefore needs neither
+mrh, PySCF nor qiskit-addon-sqd. The library's tests check that restoring the
+saved records reproduces the uninterrupted calculation bit for bit.
+
+Every process that calls mrh builds the LAS object with \code{lassqd.LASSCF},
+mrh's RDM-based LASSCF factory, which applies density fitting when the mean
+field uses it. The mrh-facing stages reject a LAS object that would mix exact
+active-space integrals with density-fitted potentials.
+
+\code{run_lassqd} composes the stages serially in one process and repeats them
+until the absolute total-energy change is below the tolerance or the cycle
+limit is reached. The distributed workflow below composes the same stages
+across processes and machines.
+
+\section{The proposed LASSQD--QCSC Prefect distributed workflow}
+
+The design uses \textbf{mrh unchanged}. LASSQD captures the fragment
+Hamiltonians, solves the fragments outside mrh, then re-enters mrh with
+callbacks that return the completed results; \code{capture_embedding} and
+\code{update_orbitals} make the two mrh calls. Prefect coordinates dependencies;
+QCSC launches HPC jobs and handles QPU submission and fetching.
+
+The selected scope is several fragments, with each diagonalization batch
+fitting on one node. For fragment $f$ with $B_f$ batches, launch one MPI job on
+$B_f$ nodes, with one rank per node and one batch per rank. Retain that
+allocation across recovery rounds. Different fragments use separate MPI jobs
+and can run concurrently. Use the existing collective
+\code{diagonalize_fermionic_hamiltonian} interface with an application-supplied
+\code{sci_solver}; SQD's recovery loop remains unchanged.
+
+The Prefect coordinator exchanges storage references. Full numerical arrays
+and CI vectors remain on HPC, including MPI transfers between the ranks of
+each fragment job. The control rank must accommodate gathered batch results;
+Section~\ref{sec:resources} quantifies why this is a stronger requirement than
+one batch fitting on one node.
+
+Figure~\ref{fig:distributed-workflow} shows the complete workflow and the
+execution nodes. It distinguishes the two loops. The \textcolor{accent}{%
+\textbf{configuration-recovery loop}} runs inside each fragment's MPI job and
+determines most of the HPC cost; the \textbf{macrocycle loop} returns to
+Hamiltonian capture after each orbital update and is coordinated by Prefect.
+The recovery loop belongs to the fragment solve rather than to the capture
+stage: capture runs once per macrocycle, before sampling, whereas every
+recovery round needs that fragment's counts and the previous round's
+occupancies. Node labels denote resource roles: short HPC stages may reuse
+nodes, and the coordinator, scheduler submitter, and QPU gateway may share a
+service host.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  stage/.style={worker,text width=9cm,minimum height=1.05cm},
+  widestage/.style={worker,text width=12cm,minimum height=1.05cm},
+  fragmentstage/.style={box,text width=2.5cm,minimum height=1.25cm},
+  loopstep/.style={box,fill=white,draw=accent,text width=2.2cm,
+    minimum height=1.25cm,font=\footnotesize},
+  flowlabel/.style={font=\small,fill=white,inner sep=2pt},
+  recovery/.style={-{Stealth[length=2mm]},very thick,draw=accent},
+  macro/.style={-{Stealth[length=2mm]},very thick,draw=navy,dashed}
+]
+  \node[stage,fill=bluefill] (coordinator) at (0,0)
+    {\textbf{Prefect + QCSC}\\Service host: coordinate all stages};
+  \node[stage] (capture) at (0,-1.7)
+    {\textbf{Capture fragment Hamiltonians and bases}\\Shared-memory HPC node};
+  \draw[arrow,dashed] (coordinator) -- (capture);
+
+  % Per-fragment region.
+  \draw[draw=navy!60,rounded corners=4pt] (-7.5,-2.65) rectangle (7.5,-9.75);
+  \node[font=\small\bfseries,text=navy] at (0,-3.0)
+    {For each fragment $f$, concurrently};
+  \node[fragmentstage,fill=greenfill] (prepare) at (-5.9,-3.75)
+    {\textbf{Prepare circuits}\\HPC node};
+  \node[fragmentstage] (sample) at (-5.9,-5.8)
+    {\textbf{Sample circuits}\\QPU + gateway};
+  \draw[arrow] (capture.west) -| (prepare.north);
+  \draw[arrow] (prepare) -- (sample);
+
+  % One fragment's MPI job, containing the recovery loop.
+  \draw[draw=navy,fill=greenfill,rounded corners=3pt]
+    (-4.15,-3.45) rectangle (7.3,-9.45);
+  \node[font=\small,text=navy,align=center] at (1.6,-3.85)
+    {\textbf{SQD solve:} one MPI job on $B_f$ HPC nodes, one rank per node};
+  \draw[draw=accent,fill=accentfill,rounded corners=3pt]
+    (-3.98,-4.25) rectangle (2.3,-9.2);
+  \node[loopstep] (recover) at (-2.55,-5.8)
+    {Rank 0: recover and subsample $B_f$ batches};
+  \node[loopstep] (bcast) at (-2.55,-7.75)
+    {Broadcast the batches to all ranks};
+  \node[loopstep] (solve) at (0.85,-7.75)
+    {Rank $r$ solves batch $r$ (all ranks)};
+  \node[loopstep] (select) at (0.85,-5.8)
+    {Gather on rank 0; select best; test convergence};
+  \draw[recovery] (recover) -- (bcast);
+  \draw[recovery] (bcast) -- (solve);
+  \draw[recovery] (solve) -- (select);
+  \draw[recovery] (select.north) -- (0.85,-4.62)
+    -- node[font=\footnotesize,fill=accentfill,inner sep=1pt] {next round}
+    (-2.55,-4.62) -- (recover.north);
+  \node[font=\footnotesize\bfseries,text=accent,align=center] at (-0.85,-8.85)
+    {Configuration-recovery loop (up to \code{max_iterations} rounds)};
+  \node[box,fill=white,text width=2.3cm,minimum height=1.25cm,font=\footnotesize]
+    (finalize) at (5.65,-5.8)
+    {Rank 0:\\RDMs in LAS basis,\\carryover, manifest};
+  \draw[arrow] (sample.east) -- (recover.west);
+  \draw[arrow] (select.east) -- node[font=\scriptsize,above,align=center]
+    {converged or\\last round} (finalize.west);
+
+  \node[widestage] (update) at (0,-10.85)
+    {\textbf{Replay mrh: combine fragment results and update orbitals}\\
+    Shared-memory HPC node; waits for every fragment};
+  \draw[arrow] (finalize.south) -- (finalize.south |- update.north);
+  \node[stage,fill=bluefill] (done) at (0,-12.55)
+    {\textbf{Final result}\\Orbitals, RDMs and total LAS energy};
+  \draw[arrow] (update) -- node[flowlabel,right] {stopping rule met} (done);
+  \draw[macro] (update.east) -- (7.9,-10.85)
+    -- node[flowlabel,rotate=90] {next macrocycle}
+    (7.9,-1.7) -- (capture.east);
+\end{tikzpicture}
+\caption{Workflow and node roles. Each fragment uses one MPI job with one
+rank per node. The \textcolor{accent}{orange} configuration-recovery loop runs
+entirely inside that job and creates no Prefect tasks. The dashed macrocycle
+loop is coordinated by Prefect: the orbital update waits for all fragments,
+then the next macrocycle captures new Hamiltonians, until energy convergence
+or the cycle limit. Section~\ref{sec:tasks} maps the boxes to Prefect tasks.}
+\label{fig:distributed-workflow}
+\end{figure}
+
+\textbf{Capture a fixed embedding.}
+An HPC task loads a committed \code{LASState} snapshot of orbitals and fragment
+RDMs and calls \code{capture_embedding}, which passes those RDMs explicitly to
+mrh and captures all fragment Hamiltonians through temporary callbacks. mrh
+constructs their effective one-electron Hamiltonians before its fragment loop,
+so the captured problems can be solved concurrently without changing that
+dependency structure. The same task computes each fragment's ROHF sampling basis
+and stores the resulting \code{Embedding}.
+
+\textbf{Run fragment workflows concurrently.}
+Each fragment's ROHF basis and transformed integrals come from the captured
+\code{Fragment} record, which circuit construction and SQD share, so the
+preparation stage only builds and compiles circuits. It runs on HPC and stores
+them as a \code{FragmentCircuits} record; a QPU gateway loads it, submits the
+circuits, and stores the counts. Because QPY loads native ffsim gates as opaque
+gates, the stored circuits must be compiled for the backend, and the gateway's
+Qiskit must be at least as new as the preparing node's. SQD can start as soon as that
+fragment's counts arrive, although a shared QPU may serialize sampling.
+Reserve the multi-node solve allocation only after the counts are available.
+Short circuit-preparation stages can be bundled to reduce queue overhead.
+
+\textbf{Use SQD's collective interface within each fragment.}
+Rank 0 loads the fragment's \code{SQDState}, which holds the carryover strings
+and their basis, and calls \code{FragmentSQD.prepare} with the embedding's AO
+overlap, which carryover requires. It maps the carryover
+onto the fragment's sampling basis and resolves the SQD inputs
+(\code{SQDInputs}). Broadcast the integrals, counts, numerical options, included
+configurations, and starting random-generator state so all ranks enter SQD with
+agreeing arguments. Every rank calls \code{SQDInputs.run}, which calls
+\code{diagonalize_fermionic_hamiltonian}. Within each recovery round:
+\begin{enumerate}
+  \item SQD performs recovery and subsampling on rank 0 and broadcasts the
+  ordered list of determinant batches to all ranks.
+  \item All ranks enter the custom \code{sci_solver}. Rank $r$ solves batch
+  index $r$ locally using Fulqrum or PySCF and the threads assigned to its node.
+  Rank 0 also solves its batch. Each rank owns its numerical solver objects.
+  \item The adapter gathers the full \code{SCIResult} objects on rank 0 and
+  returns them there in the original batch order. Other ranks may return an
+  empty list: only rank 0 consumes the adapter's results in the inspected SQD
+  implementation. These are ordinary states containing full CI amplitudes.
+  \item SQD invokes the callback on rank 0, selects the round's best batch,
+  checks convergence, and updates occupancies and carryover there. It
+  broadcasts the iteration state, including the best-so-far and current
+  \code{SCIResult} objects, to every rank.
+\end{enumerate}
+This gather and broadcast synchronizes successive rounds. Fragments advance
+independently; a slow batch delays its own fragment's next round. The final
+best result is available on every rank. Only rank 0 calls
+\code{FragmentSQD.finalize}, which extracts the carryover, builds and rotates the
+RDMs, and returns the \code{FragmentResult} and the next \code{SQDState}, and
+only rank 0 writes the checkpoint and manifest. SQD guards its own callback; the
+worker must guard \code{finalize} and the writes.
+
+Each fragment returns energy including the constant Hamiltonian term,
+spin-resolved 1-RDMs of shape $(2,n_f,n_f)$, and a spin-summed 2-RDM of shape
+$(n_f,n_f,n_f,n_f)$. The RDMs must use the original LAS fragment basis.
+Store the \code{FragmentResult} and \code{SQDState} records under references;
+CI vectors need not pass through the Prefect coordinator.
+
+\textbf{Replay mrh and commit the orbital update.}
+Wait for all required fragment results, then call \code{update_orbitals}
+with the captured \code{Embedding}. It checks each result's fragment digest and
+re-enters mrh with callbacks that validate each requested Hamiltonian against
+the captured one and return the stored energy and RDMs. It passes the
+\emph{original starting RDMs} to the kernel; the callbacks introduce the new
+RDMs at the solve boundary. It uses \code{max_cycle_macro=1} and
+\code{max_cycle_rdmjk=0}. mrh computes the LAS energy from the RDMs and only
+logs the fragment energies.
+
+mrh repeats global preparation and visits the callbacks sequentially, but no
+SQD solve is repeated. It then performs the coupled energy calculation, orbital
+update, and canonicalization. Commit the returned orbitals and RDMs together
+in their consistent basis. Embedded fragment energies are not simply additive:
+the total LAS energy includes interfragment contributions.
+
+\textbf{Launch jobs through QCSC.}
+A LASSQD worker executable reads a stage request and writes a validated result
+manifest. The flow invokes it through \code{run_job_from_blocks}, using
+\code{CommandBlock} for the executable, \code{ExecutionProfileBlock} for
+resources, and \code{HPCProfileBlock} for site configuration. Schedule capture,
+fragment preparation, and replay as classical HPC stages. For each collective
+fragment solve set \code{num_nodes} to $B_f$, \code{mpiprocs=1}, an MPI-capable
+launcher, and appropriate \code{ompthreads} and BLAS/OpenMP environment
+settings. Configure the site's launcher and placement options explicitly;
+on Slurm the total task count must also agree with $B_f$. On Fugaku the PJM
+and launcher MPI options must express the same rank layout.
+
+At startup verify that there are $B_f$ ranks on $B_f$ distinct nodes and that
+SQD detects the same MPI rank and size as \code{MPI.COMM_WORLD}. The inspected
+SQD detects MPI at import time from launcher environment variables. Each
+fragment gets its own MPI world; its ranks all participate in the same SQD
+call. Make MPI calls from the main thread, with an appropriate MPI thread
+support level, while the local numerical libraries use node-local threads.
+
+Use the logical job keys of Section~\ref{sec:identity} as QCSC job keys, with
+QCSC's registry-backed submit/monitor APIs for restartable scheduling.
+\code{run_jobs_from_blocks_bulk} can manage a pool of complete fragment MPI
+jobs; individual diagonalization batches remain inside their fragment
+allocation. Fugaku's \code{GlobalFugakuBulkRunner} supports rolling progress as
+fragment counts arrive. Other scheduler targets need an explicit queue probe
+for bulk execution. Bound both active fragment jobs and the total reserved
+nodes $\sum_f B_f$; a job-count limit alone does not impose a node budget.
+The simple \code{run_job_from_blocks} path remains useful for initial local and
+scheduler validation. The submitter needs scheduler access and shared storage
+or explicit file staging.
+
+The gateway awaits QCSC's asynchronous \code{QCSCSamplerV2} submission and
+fetching, saving provider job references and counts durably. \code{run_lassqd}
+is synchronous, so the gateway calls the stage functions on the stored
+\code{FragmentCircuits} instead. The \code{groups} chosen at preparation decide
+which fragments share a circuit, \code{submit_circuits} can submit any subset
+of the circuits, and \code{collect_samples} combines pub results from several
+jobs, including jobs recovered by identifier. Fragments can therefore obtain
+counts independently where useful.
+
+\textbf{Persist enough state to restart.}
+Requests identify the parent snapshot, fragment, Hamiltonian, basis, acquisition,
+and numerical settings. Save the counts as \code{FragmentSamples} and each
+fragment's carryover strings, their basis and full random-generator state as
+\code{SQDState}. Sampling and each fragment use independent random streams,
+spawned from one seed: \code{SQDState.from_seed} spawns a child stream from a
+generator, and each fragment's stream then continues only in its own
+\code{SQDState}. Concurrent fragments therefore draw the same numbers as in the
+serial reference, whatever the order of their solves. During collective SQD,
+rank 0 owns the
+advancing recovery RNG; its saved state is authoritative. Give any stochastic
+local eigensolver a seed tied to the logical batch, not completion order.
+
+Treat a failed collective fragment solve as one failed MPI job. Propagate
+errors or abort the MPI world so peers cannot remain blocked in a collective,
+including failures in rank-0 preparation, callbacks, and finalization. For
+example, the inspected SQD raises \code{ValueError} on rank 0 when no sample has
+the requested electron counts, while the other ranks wait in the batch
+broadcast. The initial restart contract reruns the whole fragment call from its
+input checkpoint and saved counts; the current SQD API does not expose complete
+mid-round continuation state. Preserve completed results from other fragments.
+Commit a new global state only after replay and the orbital update succeed.
+Section~\ref{sec:identity} defines how jobs are identified, when a result is
+accepted, and how ambiguous submissions are recovered.
+
+\section{Prefect task granularity and scale}
+\label{sec:tasks}
+
+Prefect tasks correspond to stages whose inputs and outputs are stored records,
+not to the numerical steps inside them. One flow run drives a calculation; an
+optional subflow per macrocycle groups its tasks in the Prefect UI at the cost
+of one additional flow run per macrocycle. Per macrocycle, the tasks are:
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lcL@{}}
+\toprule
+Prefect task & Runs per macrocycle & Contents \\
+\midrule
+Capture & 1 & One HPC job; writes the captured Hamiltonians. \\
+Prepare circuits & 1 & One HPC job for all fragments by default; writes the
+\code{FragmentCircuits} record. Per-fragment tasks are possible but rarely
+worthwhile. \\
+QPU submit, QPU fetch & $2J$ & QCSC's split submit and fetch tasks, one pair per
+sampler job; $1 \le J \le F$, depending on how many circuit groups are
+submitted separately. \\
+Fragment solve & $F$ & Submit one fragment MPI job, await it, and validate its
+manifest. All recovery rounds and batches run inside the job. \\
+Replay and commit & 1 & One HPC job; mrh replay, orbital update, commit. \\
+\midrule
+Total & $3 + 2J + F$ & \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\textbf{Polling creates no task runs.} \code{run_job_from_blocks} waits for its
+job inside the awaiting call, querying the scheduler every
+\code{watch_poll_interval} seconds (10 by default). \code{run_jobs_from_blocks_bulk}
+monitors all of its jobs in one loop, with one aggregated scheduler query per
+target and poll; its documentation states that it does not create one Prefect
+task per scheduler job. QCSC's QPU fetch task waits on the provider job within
+one task. Prefect retries return the same task run to a retrying state instead
+of creating a new run. Polling therefore costs scheduler queries, not task
+runs: $F$ independently waiting solve tasks issue up to $F$ queries per
+interval, so use intervals of 30--60\,s for multi-hour jobs, or replace the $F$
+solve tasks by one task that drives \code{run_jobs_from_blocks_bulk}.
+
+\textbf{Expected scale.} The table below assumes $F = 8$ fragments and
+$M = 50$ macrocycles (the default \code{max_cycles} of \code{run_lassqd}), with $B_f = 16$
+batches and up to $R = 10$ recovery rounds per fragment solve. These values are
+illustrative, not measured requirements.
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}Lrr@{}}
+\toprule
+Granularity & Per macrocycle & For $M=50$ \\
+\midrule
+One sampler job ($J=1$), one task per fragment solve & 13 & 650 \\
+One sampler job per fragment ($J=F$), one task per fragment solve & 27 & 1{,}350 \\
+One sampler job ($J=1$), one bulk task for all fragment solves & 6 & 300 \\
+\midrule
+Hypothetical: one task per batch and round ($F B_f R$) & 1{,}280 & 64{,}000 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Even at $F = 16$ with one sampler job per fragment, the count is 51 per
+macrocycle and 2{,}550 in total. Task runs grow linearly in $F$ and $M$ and are
+independent of $B_f$ and $R$. Per-fragment solve tasks are preferred because
+they express the dependency of each solve on that fragment's counts and report
+fragment progress individually; the bulk task is the fallback if the Prefect
+server becomes a bottleneck. A Prefect global concurrency limit whose slots
+represent nodes, with each solve task occupying $B_f$ slots, enforces the node
+budget $\sum_f B_f$ across concurrently waiting tasks.
+
+\section{Job identity, completion, and recovery}
+\label{sec:identity}
+
+\subsection{Logical job identity}
+
+A \emph{logical job} is one stage execution for one input state. Its key
+contains:
+\begin{itemize}
+  \item the calculation identifier;
+  \item the parent snapshot: a digest of the committed orbitals, fragment RDMs,
+  and fragment continuation states, with the macrocycle index for readability;
+  \item the stage: \code{capture}, \code{prepare}, \code{sample}, \code{solve},
+  or \code{replay};
+  \item the fragment index, or \code{all} for global stages;
+  \item the request digest: a hash of the canonical request record, including
+  digests of its input arrays, numerical settings, starting random-generator
+  states, and code and environment versions.
+\end{itemize}
+A readable form is
+\code{<calc>/c007-<snapshot8>/solve/f03}, plus a 12-character digest of the full
+key, such as \code{lq-3f9a0c71b2de}, for places with length limits. The
+macrocycle index alone is insufficient: after a rollback, or a rerun with
+changed settings, the same index refers to a different input. The request
+digest ensures that recovery never adopts a job submitted with other inputs.
+Attempts are not part of the key; each attempt gets an attempt identifier
+recorded in its claim and manifest.
+
+The key determines the job's working directory and is used as the QCSC
+\code{job_key}. Its short digest is written wherever a running job can be found
+again: the scheduler job name and the QPU job's tags. Slurm and PBS default the
+job name to the script name, which QCSC derives from the job key. Fugaku needs
+an explicit PJM job name: \code{run_job_from_blocks} accepts one, but
+\code{submit_job_from_blocks} does not currently pass it. Runtime job tags can be
+set through the sampler options.
+
+\subsection{Accepting a result}
+
+The scheduler state, the QCSC registry, and the Prefect task state are evidence
+about a job's execution. The \emph{result manifest} is the only evidence of
+its output. A manifest is \emph{valid} when:
+\begin{enumerate}
+  \item it was published atomically by rank 0 as the job's final write (written
+  to a temporary name, flushed, then linked into place without replacing an
+  existing manifest), after every referenced file was complete;
+  \item its logical key and request digest equal those of the current request;
+  \item every referenced file matches the size and SHA-256 recorded in the
+  manifest;
+  \item its arrays pass semantic checks: expected shapes and dtypes, finite
+  values, Hermitian 1-RDMs with traces $n_\alpha$ and $n_\beta$, the 2-RDM
+  partial trace $\sum_r \Gamma_{pqrr} = (N-1)\gamma_{pq}$, and an energy
+  recomputed from the stored Hamiltonian and RDMs that matches the reported
+  energy to a set tolerance.
+\end{enumerate}
+These checks cost $O(n_f^4)$ per fragment and need no rerun.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}llL@{}}
+\toprule
+Scheduler or QCSC status & Manifest & Action \\
+\midrule
+\code{SUCCEEDED} & valid & Accept. \\
+\code{SUCCEEDED} & missing or invalid & Reject and quarantine the manifest. The
+job has ended, so a new attempt may be submitted automatically, up to a retry
+limit. \\
+\code{FAILED}, \code{CANCELLED} & valid & Accept, recording the discrepancy. \\
+\code{FAILED}, \code{CANCELLED} & missing or invalid & The job has ended: retry
+with a new attempt, up to a retry limit. \\
+\code{UNKNOWN} & valid & Accept. Keep monitoring until the job ends, or cancel
+it to release its nodes. \\
+\code{UNKNOWN} & missing & Do not resubmit; reconcile as in
+Section~\ref{sec:ambiguous}. \\
+\code{QUEUED}, \code{RUNNING} & valid & Accept; the job is past publication and
+only cleaning up. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+A valid result may therefore be accepted when the scheduler or control-side
+status is \code{FAILED} or \code{UNKNOWN}. Nothing writes to a job's outputs after
+publication, and the hashes and semantic checks verify them, so a later
+failure cannot have altered them. Such failures include MPI finalization
+errors, a nonzero exit on another rank after SQD returned, epilogue failures,
+walltime expiry during cleanup, and lost scheduler accounting. The Prefect task
+state is not authoritative either: if the coordinator crashes while a solve task
+awaits its job, the job continues. On restart the flow derives every stage's
+state from storage and the registry, not from earlier task states.
+
+QCSC's registry already marks a job \code{SUCCEEDED} once all of its
+\code{expected_outputs} exist, including records previously marked
+\code{FAILED} or \code{UNKNOWN}, and never downgrades a \code{SUCCEEDED} record.
+Slurm's \code{COMPLETED} state also maps to \code{SUCCEEDED} without checking
+outputs. LASSQD therefore lists only the manifest as an expected output, never
+the data files it references, and validates the manifest itself after QCSC
+reports success. If validation fails, it moves the manifest aside so the
+registry cannot promote it again, then resets the record with
+\code{reset_jobs_for_rerun(statuses=[SUCCEEDED])}.
+
+Manifests are published without replacement, so at most one manifest per
+logical job is accepted. If two attempts run, the first to publish wins; the
+other's outputs are discarded. For HPC stages this costs only node-hours,
+because their outputs are deterministic functions of the request. For QPU
+sampling it matters more: two sampler jobs give different counts. The sample
+manifest therefore records the chosen provider job before any downstream stage
+consumes the counts, and results from any other job for the same key are
+ignored.
+
+\subsection{Recovering from an ambiguous submission}
+\label{sec:ambiguous}
+
+A submission is ambiguous when the scheduler or QPU service may have accepted
+it without the workflow recording its job identifier: the submit command timed
+out or lost its connection, or the coordinator crashed between submission and
+the registry update. QCSC records the scheduler job identifier only after the
+submit command returns. It classifies submit errors containing ``timeout'' or
+``connection'' as temporary and marks the job \code{SUBMIT_DEFERRED}, which the
+bulk refill loop later submits again. For queue-full errors this is safe; for a
+timeout the original submission may have succeeded. For LASSQD's multi-node
+solves, treat temporary submit errors other than a full queue as ambiguous:
+submit them through LASSQD code that reconciles first, rather than returning
+them to the refill pool.
+
+Each job's rank 0 writes a \emph{claim} record at startup, using exclusive file
+creation. The claim holds the logical key, request digest, attempt identifier,
+the scheduler job identifier from the job's environment (\code{SLURM_JOB_ID},
+\code{PJM_JOBID}, or \code{PBS_JOBID}), and the start time. A claim proves that
+a job started even when its submit response was lost.
+
+Before any submission or resubmission of a logical job, reconcile in this order:
+\begin{enumerate}
+  \item If a valid manifest exists, apply the acceptance rule above.
+  \item If the registry holds a scheduler or provider job identifier, monitor
+  that job.
+  \item Otherwise search for a matching job: claim records in the job's
+  directory, then the scheduler's queue and accounting by job name, or the QPU
+  service by job tag. These searches cover jobs that were accepted but have not
+  started.
+  \item If exactly one job matches, record its identifier in the registry and
+  monitor it. If several match, keep the most advanced and cancel queued
+  duplicates.
+  \item If none matches, do not resubmit automatically. Mark the logical job
+  \code{AMBIGUOUS} and stop its branch of the workflow until an operator
+  decides. An approved resubmission uses a new attempt identifier; no-replace
+  publication still accepts at most one result.
+\end{enumerate}
+QCSC exposes no search for existing jobs, so LASSQD implements steps 3 and 4
+with scheduler commands and the QPU service's job listing. QCSC's cached submit
+task returns a stored QPU job reference only if the submit task completed and
+persisted its result, so it does not cover a crash after the provider accepted
+the job.
+
+\section{Resource limits and mitigations}
+\label{sec:resources}
+
+\subsection{Sizes of \code{sci_solver} inputs and outputs}
+
+For fragment $f$ with $n = n_f$ orbitals, batch $b$ has $d_{\alpha,b}$ alpha and
+$d_{\beta,b}$ beta strings and dimension $D_b = d_{\alpha,b} d_{\beta,b}$. Each
+spin sector holds at most the distinct strings from \code{samples_per_batch}
+samples (twice that with \code{symmetrize_spin}), plus included and carryover
+strings, and never more than $\binom{n}{n_\sigma}$. \code{max_dim} caps each
+sector after these are merged, so $D_b \le$ \code{max_dim_a} $\times$
+\code{max_dim_b} is the control that bounds memory. Sizes below assume float64
+amplitudes; complex amplitudes double them.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lLl@{}}
+\toprule
+Data & Where held & Bytes \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{Inputs}} \\
+Integrals $h_1$, $h_2$ & every rank & $8n^2 + 8n^4$ \\
+Batch strings, broadcast each round & every rank & $8\sum_b (d_{\alpha,b}+d_{\beta,b})$ \\
+Counts, $U$ distinct bitstrings & rank 0 & $\approx U(2n + 8)$ \\
+\multicolumn{3}{@{}l}{\emph{Local solve of one batch}} \\
+Eigensolver workspace & owning rank & $\approx 25 \times 8D_b$ \\
+Projected Hamiltonian in CSR, $\nu$ nonzeros per row & owning rank &
+$\approx 12\nu D_b$ \\
+\multicolumn{3}{@{}l}{\emph{Outputs}} \\
+\code{SCIResult} amplitudes & owning rank & $8D_b$ \\
+Optional \code{SCIResult} RDMs & owning rank & $8n^2 + 8n^4$ \\
+Gathered batch results, unchanged interface & rank 0 & $\sum_b 8D_b$, plus RDMs if
+supplied \\
+Iteration-state broadcast (best and current) & every rank & $\le 2 \times 8D_{\max}$ \\
+\code{FragmentResult}: energy, $\gamma$, $\Gamma$ & storage & $16n^2 + 8n^4$ \\
+\code{FragmentResult}: best state and its strings & storage & $8D_b + 8(d_{\alpha,b}+d_{\beta,b})$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The workspace estimate covers SciPy's \code{eigsh} with its default 20 Lanczos
+vectors for one eigenpair, as in the notebook's Fulqrum adapter, plus the
+diagonal, start vector, result, and the transposed copy returned to SQD.
+PySCF's default Davidson solver, with a subspace of 12 vectors and their
+products, is similar. Fulqrum's \code{CSRLinearOperator.memory_size} reports
+the CSR size; $\nu$ depends on the subspace and must be measured. Every 100
+stored nonzeros per row add 1.2\,kB per determinant. The default PySCF batch
+solver returns RDMs for every batch; the notebook's Fulqrum adapter does not.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+$D_b$ & $10^6$ & $10^7$ & $10^8$ & $10^9$ \\
+\midrule
+One state vector, $8D_b$ & 8\,MB & 80\,MB & 0.8\,GB & 8\,GB \\
+Eigensolver workspace, $\approx 25 \times 8D_b$ & 0.2\,GB & 2\,GB & 20\,GB & 200\,GB \\
+Rank-0 gathered states, $B_f = 16$ & 0.13\,GB & 1.3\,GB & 13\,GB & 128\,GB \\
+Iteration-state broadcast, two states & 16\,MB & 0.16\,GB & 1.6\,GB & 16\,GB \\
+\bottomrule
+\end{tabular}
+\end{center}
+The table excludes the projected Hamiltonian, pickling buffers, and temporary
+copies; pickled communication can hold an object and its serialized buffer
+together. Consider a 32\,GiB node, such as a Fugaku A64FX node, at
+$D_b = 10^8$. Every rank fits its eigensolver workspace (about 20\,GB) and the
+broadcast state (1.6\,GB), without CSR. Rank 0 must also hold the gathered
+states, $0.8B_f$\,GB, together with their pickled copies during the gather. At
+$B_f = 16$ this peak is about 27\,GB, close to the node's capacity; beyond about
+$B_f = 20$ it exceeds the node, and beyond about $B_f = 40$ the gathered states
+alone do. One batch fitting on a node is therefore necessary but not
+sufficient.
+
+\textbf{Input-to-output scaling.} A batch's input is its strings,
+$O(d_\alpha + d_\beta) = O(\sqrt{D_b})$; its output state is $O(D_b)$. For
+$d_\alpha = d_\beta = 10^4$, 160\,kB of strings yield an 800\,MB state. Per
+round, the broadcast of batches grows as $O(B_f\sqrt{D})$, while the gather
+grows as $O(B_f D)$ and dominates communication and rank-0 memory. Fragment
+outputs and the global stages grow as $n_f^4$ independently of $D$: a 2-RDM
+takes 50\,MB at $n_f = 50$ and 0.8\,GB at $n_f = 100$. Replay holds every
+fragment's integrals and RDMs, $\sum_f 16 n_f^4$ bytes, in addition to mrh's own
+integral intermediates, which have not been measured here.
+
+\textbf{Minimum and maximum sizes.} The adapter must accept any batch with
+$D_b \ge 1$; the notebook's Fulqrum adapter handles $D_b = 1$ directly, because
+\code{eigsh} rejects a $1 \times 1$ linear operator. Counts with no bitstring
+of the requested electron counts stop SQD on rank 0 before the first broadcast,
+which must abort the MPI world as described above. With one batch per rank, \code{num_batches} must equal the
+MPI world size. No interface limits the maximum size; the limits are:
+\begin{itemize}
+  \item \emph{Memory}, as tabulated. Rank 0 is the binding constraint in the
+  unchanged-interface design.
+  \item \emph{Orbital count.} SQD switches to Python integers for 64 or more
+  orbitals, but PySCF's selected CI uses 64-bit integer strings, limiting that
+  path to $n_f \le 63$. LASSQD's carryover mapping also uses 64-bit strings
+  and rejects 64 or more orbitals.
+  \item \emph{Message size.} SQD broadcasts with mpi4py's pickle-based
+  \code{bcast}. Messages above 2\,GiB fail unless both mpi4py and the MPI library
+  support large counts; the iteration-state broadcast reaches that size at
+  $D \approx 1.3 \times 10^8$. The adapter's own gather can use buffer-based
+  \code{Gatherv} or \code{mpi4py.util.pkl5} instead. Test both at the target
+  $D$.
+\end{itemize}
+
+\textbf{Consistency between inputs and outputs.} All ranks must call SQD with
+identical arguments. At startup each rank computes a digest of its integrals,
+counts, options, included configurations, and random-generator state, and the
+job aborts if the digests differ. The adapter returns results in batch order,
+and \code{SCIResult} states remain in the fragment ROHF basis, while the
+returned RDMs are in the LAS basis. Every stored array records its basis and
+the digest of the Hamiltonian it belongs to, and each manifest records the
+digests of its inputs. \code{update_orbitals} rejects a \code{FragmentResult}
+whose fragment digest differs from the captured fragment's.
+
+\subsection{Mitigations}
+
+Each technique below addresses one bottleneck. The ones marked ``LASSQD'' keep
+the unchanged upstream interfaces.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.6cm}L>{\raggedright\arraybackslash}p{1.9cm}@{}}
+\toprule
+Bottleneck & Technique & Scope \\
+\midrule
+Rank-0 gather memory and time &
+\textbf{Reduced gather.} The inspected SQD uses only the lowest-energy batch's
+state: it takes the minimum over energies, then reads that batch's amplitudes
+for carryover and the final result. The adapter can allgather energies and
+occupancies, select the minimum with the same first-index tie-break, gather
+only that state, and return lightweight placeholder states for the others.
+This reduces rank-0 gather memory from $\sum_b 8D_b$ to $8D_b$ and removes the
+dependence on $B_f$. It relies on SQD internals, so pin it to a tested SQD
+revision; callbacks then see placeholder states. &
+LASSQD \\ \addlinespace
+Replicated iteration state &
+Every rank receives the best and current states, $\le 16D$ bytes. Avoiding this
+needs SQD to broadcast only energies, occupancies, and carryover strings,
+keeping states on rank 0. &
+SQD change \\ \addlinespace
+Serialization copies &
+Gather amplitudes with buffer-based \code{Gatherv} or \code{mpi4py.util.pkl5}
+instead of pickling whole objects. &
+LASSQD \\ \addlinespace
+Local eigensolver memory &
+Use Fulqrum's matrix-free \code{SubspaceHamiltonian.matvec} instead of a CSR
+matrix, removing $12\nu D$ bytes at the cost of recomputing matrix elements in
+each iteration. Reduce the number of Lanczos vectors. Reuse the operator
+across rounds. &
+LASSQD \\ \addlinespace
+Batches larger than a node &
+Distribute each batch over a group of ranks with a distributed
+\code{sci_solver}; SQD's interface makes the solver the collective step. Vector
+memory per node then falls as $1/P$, at the cost of communication in every
+matrix-vector product. &
+New solver \\ \addlinespace
+Stragglers and idle ranks &
+Bound $D_b$ with \code{max_dim}. Give rank 0 the smallest batch, because it also
+performs recovery and selection. Keep callbacks cheap. With more batches than
+ranks, assign the largest batches first to balance load, at the cost of more
+memory per rank. &
+LASSQD \\ \addlinespace
+Serial rank-0 work &
+Measure recovery, subsampling, carryover, and RDM time. Final RDM construction
+from the best state can be distributed over the job's ranks. &
+LASSQD \\ \addlinespace
+Queue wait per macrocycle &
+A persistent allocation of $\sum_f B_f$ nodes serves fragment solve requests
+across macrocycles, avoiding $F$ queue waits per macrocycle. Its nodes idle
+during sampling and the global stages. Fugaku rolling submission and QCSC bulk
+submission reduce queue overhead for separate jobs. &
+LASSQD \\ \addlinespace
+Global synchronization &
+Pipeline within a macrocycle: each fragment's preparation, sampling, and solve
+proceed as their inputs arrive. The orbital update is a true barrier in
+LASSCF; removing it, for example with stale embeddings, is a numerical change
+outside this proposal. &
+LASSQD \\ \addlinespace
+Storage volume &
+Continuation needs counts, carryover strings, the previous basis, RNG state,
+and RDMs, but \code{FragmentResult} also stores the best state, $8D$ bytes.
+Make storing it optional, for diagnostics. Store
+each fragment result in one file referenced by a small manifest. Store
+Hamiltonians and counts once by content digest. The real spin-summed 2-RDM
+has a fourfold permutational symmetry that packed storage can exploit. &
+LASSQD \\ \addlinespace
+Global capture and replay &
+The optional mrh stage interfaces remove the repeated preparation pass. &
+mrh change \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Implementation outline}
+
+The serial library provides every stage and record the workflow needs
+(Section~\ref{sec:library}). What remains is an optional \code{lassqd.distributed} subpackage
+of this repository, with QCSC and MPI dependencies provided as extras. The
+inspected upstream libraries need no source changes; the optional mrh
+optimization is a separate follow-up.
+
+The subpackage's numerical part is the collective \code{sci_solver} adapter,
+which wraps a local batch solver. It checks the batch count against the MPI
+world size, solves exactly one assigned batch on each rank, and gathers results
+in batch order. It preserves the library's energy, spin, determinant-ordering,
+and RDM conventions. The Fulqrum adapter must retain the transpose between
+Fulqrum's vector ordering and SQD's alpha-by-beta amplitude matrix. Each rank
+can reuse its own prepared operator across recovery rounds at fixed fragment
+integrals. The local solver used directly as \code{sci_solver} provides the
+serial numerical reference. Keep callbacks cheap: they run on rank 0 between
+rounds while the other ranks wait. Both the local solves and the collective
+result aggregation must fit their assigned resources.
+
+The rest of the subpackage is orchestration. It defines versioned request,
+claim, and manifest records that reference the library's HDF5 records and their
+digests. It also holds the Prefect flows, worker entry points, the QPU gateway,
+storage adapters, MPI resource profiles, reconciliation, and failure/retry
+handling. Co-installation with the inspected QCSC packages requires Python 3.11
+or newer; separate gateway and worker environments can communicate through the
+records. The MPI worker environment also needs \code{mpi4py} built for the
+site's MPI runtime. LASSQD requires \code{qiskit-addon-sqd>=0.13.1}, which
+includes SQD's MPI collective module; confirm that the deployed revision behaves
+as described here. SQD detects MPI when it is imported, so capture and replay
+workers launched with several ranks must not import qiskit-addon-sqd. Importing
+\code{initial_state}, \code{capture_embedding}, \code{update_orbitals} and the
+records does not, and the library's tests check this.
+
+Control BLAS/OpenMP threads within each node and verify rank placement.
+Global capture and replay use mrh's numerical execution; provision a
+suitable shared-memory node for their integrals and orbital calculations.
+Retaining fragment allocations avoids queueing between recovery rounds, but
+nodes wait during rank-0 recovery, diagnostics, and result aggregation, and for
+the slowest batch in each round. Measure repeated preparation, queue time,
+local solves, communication, rank-0 processing, orbital work, and peak memory
+on every rank before claiming an optimal node count or speedup.
+
+\section{Numerical validation}
+\label{sec:validation}
+
+Define the numerical validation before implementing the distributed workflow.
+The distributed workflow changes how and where the library's stages run, not
+what they compute, and each step below changes one aspect of execution, so a
+difference can be attributed to it. Workflow validation and numerical
+equivalence are separate tasks with separate tests.
+
+\subsection{Step-by-step comparison}
+
+Each step introduces one change and is compared only with its predecessor, with
+a stated expectation. ``Bitwise'' agreement assumes the same libraries, thread
+counts, and hardware, and deterministic eigensolver start vectors; the
+notebook's adapter sets \code{v0}, whereas ARPACK's default start is random.
+Where bitwise agreement is not achievable, use tight tolerances on invariant
+quantities.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lLL@{}}
+\toprule
+Step & Change from the previous step & Expected agreement \\
+\midrule
+S1 & Serial \code{run_lassqd} with the serial batch adapter, instrumented to
+record traces. & Baseline. \\
+S2 & The stages as separate processes, each reading and writing the stored
+records. & Bitwise with S1. \\
+S3 & Collective adapter on one machine: 1 rank, then $B_f$ ranks. & Identical
+batch lists, best batch, carryover strings, and final RNG state; energies and
+RDMs bitwise with equal thread counts. \\
+S4 & Target scheduler, one rank per node. & As S3, within tolerance if node
+libraries differ. \\
+S5 & Prefect/QCSC orchestration, replaying the counts stored at S4. & Bitwise
+with S4. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The library builds fragment problems from the alpha one-electron integrals
+\code{h1s[0]} and stops on the energy change between macrocycles; the
+distributed workflow keeps both. Full spin-dependent embedding and stronger
+convergence criteria are separate numerical changes.
+
+Two configurations isolate numerical changes from randomness:
+\begin{itemize}
+  \item \emph{RNG-insensitive SQD.} Use one recovery round and no initial
+  occupancies, and set \code{samples_per_batch} to at least the number of
+  postselected bitstrings. Then the inspected SQD postselects and copies all bitstrings into every
+  batch without random draws. Stored counts fix the samples. Differences then
+  come only from bases, Hamiltonians, initialization, or execution.
+  \item \emph{Exact limit.} When the counts cover each fragment's full space, SQD
+  is exact and independent of randomness and batch partition, so results can be
+  compared with classical LASSCF using exact fragment solvers, as in the
+  library's tests.
+\end{itemize}
+
+\subsection{Intermediate comparison points}
+
+Every step records a trace of the following quantities, keyed by macrocycle,
+fragment, round, and batch. Small arrays are stored in full; large arrays are
+stored as digests with norms.
+\begin{itemize}
+  \item Captured Hamiltonians $(h_0, h_1, h_2)$ and their digests.
+  \item Fragment ROHF bases, compared through their overlap, which must be a
+  signed permutation, whether each ROHF converged, and the transformed
+  integrals.
+  \item Counts digests and random-generator states before and after each
+  fragment solve.
+  \item Per round: the ordered batch strings, per-batch energies and dimensions,
+  the selected batch, occupancies, and carryover strings.
+  \item Carryover mapping between macrocycles: the orbital overlap, the
+  assignment, and the mapped strings.
+  \item Fragment results: energy, 1-RDMs, and 2-RDM in the LAS basis.
+  \item Global state: total energy, and orbitals compared through active-space
+  projectors rather than coefficients.
+\end{itemize}
+Compare invariants rather than gauge-dependent values: RDMs, energies, and
+projectors instead of CI vector signs or orbitals within degenerate subspaces.
+A comparison tool walks two traces in execution order and reports the first
+record outside tolerance, which locates where results first diverge.
+
+\subsection{Workflow validation}
+
+Workflow tests use a stub solver that returns deterministic arrays of the
+correct shapes, QCSC's local target, and fault injection: a lost submit
+response, a coordinator crash after submission, a crash on rank 0 and on
+another rank, a duplicate job, a corrupted or partial manifest, and an
+\code{UNKNOWN} scheduler state. They verify the identity, acceptance, and
+recovery rules of Section~\ref{sec:identity}, termination without blocked
+collectives, whole-fragment restart, and the absence of partial commits,
+without numerical cost. Numerical tests run without Prefect.
+
+\subsection{Reducing validation overhead}
+
+\begin{itemize}
+  \item \emph{Stage replay.} Every stage maps a stored request to a stored
+  result, so a change to one stage is validated by rerunning only that stage on
+  stored requests. A new collective adapter, for example, reruns fragment
+  solves from stored S2 records without capture, sampling, or replay.
+  \item \emph{Content-addressed reuse.} Request digests identify results. When
+  a change affects one stage, only that stage and its dependents are
+  recomputed; upstream results are reused.
+  \item \emph{Incremental comparison.} Compare the first macrocycle's stage
+  outputs before running more, and stop at the first divergence.
+  \item \emph{Checkpoint equivalence.} Step S2 establishes that restoring from
+  stored records is equivalent to running from scratch, which justifies
+  validating segments independently.
+  \item \emph{Small references in CI.} Traces from the small systems in
+  \path{tests/} and \path{docs/lassqd.ipynb} run on every change; target-scale
+  validation runs one or two macrocycles per release.
+  \item \emph{Continuous checks in production.} The manifest's semantic checks
+  validate every result as it is produced, without rerunning anything.
+\end{itemize}
+
+\section{After validation}
+
+\begin{enumerate}
+  \item \textbf{Freeze references.} Record the validated revisions and store
+  the traces as regression references.
+  \item \textbf{Characterize performance at the target scale.} Choose $B_f$,
+  threads per rank, \code{max_dim}, poll intervals, and the node budget from
+  measured times and per-rank peak memory.
+  \item \textbf{Pilot with real hardware.} Run a few macrocycles with the QPU,
+  monitor manifest checks and reconciliation events, and exercise the operator
+  procedure for \code{AMBIGUOUS} jobs.
+  \item \textbf{Production.} Run complete calculations. The final committed
+  snapshot provides consistent orbitals and RDMs for analysis, such as LAS-PDFT
+  through \code{lassqd.pdft}.
+  \item \textbf{Adopt optimizations.} Introduce the reduced gather, the mrh
+  stage interfaces, and any SQD extension one at a time, each validated by
+  stage replay against the frozen references.
+\end{enumerate}
+
+\section{Optional follow-up: changes to mrh}
+
+The workflow above requires no mrh changes. A separate optimization can replace
+capture/replay with public numerical stages:
+\begin{itemize}
+  \item \code{prepare_las_iteration} builds fragment Hamiltonians and retains
+  the global integral and embedding intermediates.
+  \item \code{advance_las_orbitals} consumes completed fragment RDMs, reuses
+  those intermediates, and performs the orbital update without invoking
+  fragment solvers.
+\end{itemize}
+
+These interfaces remove the second initial preparation pass. Integral
+transformations required by changed orbitals still occur. The extension does
+not change the Prefect task graph or make mrh responsible for parallel workers.
+Adoption belongs after validation and profiling of the unchanged-mrh workflow;
+compare its energies, orbitals, and RDMs against that capture/replay reference.
+
+\section{Upstream source revisions}
+
+The design above is a proposal based on the following local source revisions.
+The collective adapter and the rest of \code{lassqd.distributed} have yet to
+be implemented and validated; MPI performance has not been measured here.
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Repository & Inspected commit \\
+\midrule
+Qiskit addon SQD & \code{8124d790600a} \\
+Fulqrum & \code{8ed62cf8d142} \\
+QCSC Prefect & \code{d9e63289686a} \\
+mrh & \code{f007765830b6} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The key source interfaces are:
+\begin{itemize}
+  \raggedright
+  \item SQD: \path{qiskit_addon_sqd/fermion.py}, particularly
+  \code{diagonalize_fermionic_hamiltonian}, \code{_IterationState},
+  \code{_process_sci_results}, and \code{solve_sci_batch}; MPI detection and
+  broadcasts in \path{qiskit_addon_sqd/processes.py}; subsampling in
+  \path{qiskit_addon_sqd/subsampling.py}.
+  \item LASSQD: \path{lassqd/records.py}, \path{lassqd/las.py},
+  \path{lassqd/fragment.py},
+  \path{lassqd/circuits.py}, \path{lassqd/sqd.py}, \path{lassqd/hybrid.py}, and
+  the Fulqrum adapter in \path{docs/lassqd.ipynb}.
+  \item mrh: \path{my_pyscf/mcscf/lasscf_rdm.py} and
+  \path{my_pyscf/mcscf/lasscf_sync_o0.py}, for the RDM kernel and fixed-embedding
+  fragment loop.
+  \item QCSC: \path{packages/qcsc-prefect-executor/src/qcsc_prefect_executor/from_blocks.py},
+  for submission, error classification, and monitoring; the executor's
+  \path{bulk/} package, particularly \path{registry.py} and \path{models.py}, for
+  job status and output-based completion; and
+  \path{docs/howto/howto_use_bulk_hpc_jobs.md}. Native Qiskit tasks and wrappers in
+  \path{packages/qcsc-prefect-qiskit/src/qcsc_prefect/integrations/qiskit/}.
+  \item Fulqrum: \path{fulqrum/core/linear_operator.py}, for the local projected
+  Hamiltonian, its matrix-free product and CSR size, and \path{fulqrum/core/spmv.pyx}.
+\end{itemize}
+
+\end{document}
