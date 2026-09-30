@@ -15,7 +15,9 @@ from lassqd import FragmentSQD, LASSCFNoSymm, run_lassqd
 from lassqd.basis import fragment_mo_basis, fragment_rohf
 
 
-def prepare_fragment(h1, h2, norb, nelec):
+def prepare_fragment(
+    h1: np.ndarray, h2: np.ndarray, norb: int, nelec: tuple[int, int]
+) -> QuantumCircuit:
     """Prepare this example's CCSD-initialized LUCJ state in the SQD ROHF basis."""
     norb = int(norb)
     nelec = tuple(int(n) for n in nelec)
@@ -129,7 +131,7 @@ solvers = [
 ]
 
 
-def save_orbitals(cycle, las):
+def save_orbitals(cycle: int, las: LASSCFNoSymm) -> None:
     np.save("current_orb", las.mo_coeff)
 
 

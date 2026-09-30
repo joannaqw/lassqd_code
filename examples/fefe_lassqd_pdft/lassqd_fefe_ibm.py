@@ -28,7 +28,9 @@ from lassqd import (
 from lassqd.basis import fragment_mo_basis, fragment_rohf
 
 
-def prepare_fragment(h1, h2, norb, nelec):
+def prepare_fragment(
+    h1: np.ndarray, h2: np.ndarray, norb: int, nelec: tuple[int, int]
+) -> QuantumCircuit:
     """Prepare this example's CCSD-initialized LUCJ state in the SQD ROHF basis."""
     norb = int(norb)
     nelec = tuple(int(n) for n in nelec)
@@ -93,7 +95,7 @@ pass_manager = generate_preset_pass_manager(
 pass_manager.pre_init = ffsim.qiskit.PRE_INIT
 
 
-def save_wave_function(cycle, las):
+def save_wave_function(cycle: int, las: LASSCFNoSymm) -> None:
     np.save("current_orb", las.mo_coeff)
     Path("RDMS").mkdir(exist_ok=True)
     save_rdms("RDMS/casdm.h5", las.casdm1frs, las.casdm2fr, mo_coeff=las.mo_coeff)
