@@ -17,7 +17,8 @@ def x_circuit(n, flipped):
 def test_glue_and_sample_recovers_each_fragment():
     circuits = [x_circuit(2, [0]), x_circuit(3, [2]), x_circuit(2, [0, 1])]
     glued = glue_circuits(circuits)
-    data = SamplerV2().run([glued], shots=64).result()[0].data
+    isa = preset_pass_manager(AerSimulator()).run(glued)
+    data = SamplerV2().run([isa], shots=64).result()[0].data
     # Within a fragment, qubit 0 is the rightmost bit.
     counts = [data[creg.name].get_counts() for creg in glued.cregs]
     assert counts == [{"01": 64}, {"100": 64}, {"11": 64}]
