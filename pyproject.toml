@@ -20,7 +20,7 @@ dependencies = [
     "mrh==0.1.dev5906+gf00776583",
     "qiskit",
     "qiskit-aer",
-    "qiskit-addon-sqd",
+    "qiskit-addon-sqd>=0.12.0",
     "ffsim",
 ]
 

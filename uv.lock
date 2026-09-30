@@ -791,7 +791,7 @@ requires-dist = [
     { name = "pyscf", specifier = "==2.14.0" },
     { name = "pyscf-forge", git = "https://github.com/pyscf/pyscf-forge.git?rev=f55abdb2806697c4132c416a43ddebadf93e3b1a" },
     { name = "qiskit" },
-    { name = "qiskit-addon-sqd" },
+    { name = "qiskit-addon-sqd", specifier = ">=0.12.0" },
     { name = "qiskit-aer" },
     { name = "qiskit-ibm-runtime", marker = "extra == 'ibm'" },
     { name = "scipy", specifier = "<1.18" },

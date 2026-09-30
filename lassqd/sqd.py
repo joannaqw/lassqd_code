@@ -8,15 +8,14 @@ from typing import Any
 import numpy as np
 from pyscf import fci
 from pyscf.lib import logger
-from qiskit_addon_sqd.configuration_recovery import recover_configurations
-from qiskit_addon_sqd.counts import counts_to_arrays
+from qiskit.primitives import BitArray
 from qiskit_addon_sqd.fermion import (
     SCIResult,
     SCIState,
     bitstring_matrix_to_ci_strs,
+    diagonalize_fermionic_hamiltonian,
     solve_sci,
 )
-from qiskit_addon_sqd.subsampling import postselect_by_hamming_right_and_left, subsample
 
 from lassqd.basis import fragment_mo_basis, fragment_rohf, from_mo
 
@@ -65,7 +64,7 @@ def solve_sci_nroots(
     _, sci_vecs = fci.selected_ci.kernel_fixed_space(
         myci, hcore, eri, norb, nelec, ci_strs=ci_strings, nroots=nroots, **kwargs
     )
-    sci_vec = sci_vecs[0]
+    sci_vec = sci_vecs if nroots == 1 else sci_vecs[0]
 
     # Energy from the RDMs, matching what solve_sci does.
     dm1s = myci.make_rdm1s(sci_vec, norb, nelec)
@@ -128,8 +127,11 @@ class FragmentSQD:
 
     Each call rotates the Hamiltonian to the fragment's ROHF orbitals and runs
     ``iterations`` rounds of self-consistent configuration recovery, with
-    ``n_batches`` subsampled batches per round. The energy, RDMs and carryover
-    strings all come from the lowest-energy batch of the last round.
+    ``n_batches`` subsampled batches per round, using the addon's
+    :func:`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`. Recovery
+    uses the lowest-energy batch's occupancies from the preceding round. The
+    returned energy, RDMs and carryover strings all come from the lowest-energy
+    batch across all rounds.
 
     Only the alpha one-electron Hamiltonian ``h1s[0]`` is used.
 
@@ -140,7 +142,8 @@ class FragmentSQD:
 
     Attributes set by each call: ``e_hist``, ``d_hist`` (subspace dimension),
     ``a_hist``/``b_hist`` (alpha/beta string counts), ``s_hist`` (<S^2>), all of
-    shape ``(iterations, n_batches)``; ``occupancy_hist``; ``e_tot``; ``dm1s`` and
+    shape ``(iterations, n_batches)``; ``occupancy_hist`` (the lowest-energy
+    batch's occupancies per round, alpha then beta); ``e_tot``; ``dm1s`` and
     ``dm2`` in the LAS basis; ``sci_state`` in the fragment ROHF basis.
 
     Args:
@@ -191,7 +194,12 @@ class FragmentSQD:
         self.prev_mo: np.ndarray | None = None
 
     def __call__(
-        self, norb: int, nelec: tuple[int, int], h0: float, h1s: np.ndarray, h2: np.ndarray
+        self,
+        norb: int,
+        nelec: tuple[int, int],
+        h0: float,
+        h1s: np.ndarray,
+        h2: np.ndarray,
     ) -> tuple[float, np.ndarray, np.ndarray]:
         """Solve the fragment with SQD on ``self.counts``.
 
@@ -214,7 +222,9 @@ class FragmentSQD:
         """
         log = logger.Logger(sys.stdout, self.verbose)
         if self.counts is None:
-            raise RuntimeError("FragmentSQD.counts must be set before the kernel is called")
+            raise RuntimeError(
+                "FragmentSQD.counts must be set before the kernel is called"
+            )
         neleca, nelecb = nelec
         spin_sq = self.spin_sq
         if spin_sq is None:
@@ -245,58 +255,38 @@ class FragmentSQD:
         self.b_hist = np.zeros(shape)
         self.occupancy_hist = np.zeros((self.iterations, 2 * norb))
 
-        bitstring_matrix_full, probs_full = counts_to_arrays(self.counts)
-        avg_occupancies = None
-        for i in range(self.iterations):
-            if avg_occupancies is None:
-                bs_mat, probs = bitstring_matrix_full, probs_full
-            else:
-                bs_mat, probs = recover_configurations(
-                    bitstring_matrix_full,
-                    probs_full,
-                    avg_occupancies,
-                    neleca,
-                    nelecb,
-                    rand_seed=self.rng,
-                )
-            # Throw out samples with incorrect hamming weight and create batches of subsamples.
-            bs_mat, probs = postselect_by_hamming_right_and_left(
-                bs_mat, probs, hamming_right=neleca, hamming_left=nelecb
-            )
-            batches = subsample(
-                bs_mat, probs, self.samples_per_batch, self.n_batches, rand_seed=self.rng
-            )
-
-            results = []
-            occs = np.zeros((self.n_batches, 2 * norb))
-            for j, batch in enumerate(batches):
-                strings_a, strings_b = bitstring_matrix_to_ci_strs(batch, open_shell=True)
-                if use_carryover:
-                    strings_a = np.union1d(strings_a, self.carryover_strings[0])
-                    strings_b = np.union1d(strings_b, self.carryover_strings[1])
-                result = solve_sci_nroots(
-                    (strings_a, strings_b),
-                    h1_mo,
-                    h2_mo,
+        def sci_solver(ci_strings, h1, h2, norb, nelec):
+            return [
+                solve_sci_nroots(
+                    strings,
+                    h1,
+                    h2,
                     norb,
-                    (neleca, nelecb),
+                    nelec,
                     spin_sq=spin_sq,
                     nroots=self.nroots,
                     max_cycle=self.max_davidson_cycles,
                     tol=self.tol,
                 )
-                results.append(result)
-                self.e_hist[i, j] = result.energy
-                self.s_hist[i, j] = result.sci_state.spin_square()
-                self.a_hist[i, j] = len(strings_a)
-                self.b_hist[i, j] = len(strings_b)
-                self.d_hist[i, j] = len(strings_a) * len(strings_b)
-                # occs stores (spin-up | spin-down); recover_configurations wants (up, down).
-                occs[j, :norb], occs[j, norb:] = result.orbital_occupancies
-            self.occupancy_hist[i] = occs.mean(axis=0)
-            avg_occupancies = (self.occupancy_hist[i, :norb], self.occupancy_hist[i, norb:])
+                for strings in ci_strings
+            ]
 
-            best = results[int(np.argmin(self.e_hist[i]))]
+        iteration = 0
+
+        def callback(results):
+            nonlocal iteration
+            i = iteration
+            iteration += 1
+            for j, result in enumerate(results):
+                state = result.sci_state
+                self.e_hist[i, j] = result.energy
+                self.s_hist[i, j] = state.spin_square()
+                self.a_hist[i, j] = len(state.ci_strs_a)
+                self.b_hist[i, j] = len(state.ci_strs_b)
+                self.d_hist[i, j] = state.amplitudes.size
+
+            best = min(results, key=lambda result: result.energy)
+            self.occupancy_hist[i] = np.concatenate(best.orbital_occupancies)
             log.info(
                 "SQD iteration %d: lowest E = %.12g, <S^2> = %.6f, dims = %s",
                 i,
@@ -304,13 +294,33 @@ class FragmentSQD:
                 best.sci_state.spin_square(),
                 self.d_hist[i].astype(int),
             )
-            if use_carryover:
-                self.carryover_strings = self._carryover(best.sci_state)
-                log.info(
-                    "SQD carrying over %d alpha, %d beta strings",
-                    len(np.unique(self.carryover_strings[0])),
-                    len(np.unique(self.carryover_strings[1])),
-                )
+
+        best = diagonalize_fermionic_hamiltonian(
+            h1_mo,
+            h2_mo,
+            BitArray.from_counts(self.counts, num_bits=2 * norb),
+            self.samples_per_batch,
+            norb,
+            nelec,
+            num_batches=self.n_batches,
+            max_iterations=self.iterations,
+            # Keep the requested number of rounds and the fixed history shapes.
+            energy_tol=0.0,
+            occupancies_tol=0.0,
+            sci_solver=sci_solver,
+            symmetrize_spin=False,
+            include_configurations=self.carryover_strings if use_carryover else None,
+            carryover_threshold=self.carryover_threshold if use_carryover else np.inf,
+            callback=callback,
+            seed=self.rng,
+        )
+        if use_carryover:
+            self.carryover_strings = self._carryover(best.sci_state)
+            log.info(
+                "SQD carrying over %d alpha, %d beta strings",
+                len(np.unique(self.carryover_strings[0])),
+                len(np.unique(self.carryover_strings[1])),
+            )
 
         self.sci_state = best.sci_state
         self.e_tot = best.energy + h0

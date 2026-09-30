@@ -44,9 +44,13 @@ result = run_lassqd(las, mo_coeff, solvers, sampler, pass_manager=pass_manager, 
 e_pdft = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_coeff)
 ```
 
-`FragmentSQD` returns the energy and RDMs of the lowest-energy batch of the last
-configuration-recovery iteration, and SQD sees only the alpha one-electron
-Hamiltonian `h1s[0]`. `result.mo_coeff` with `result.casdm1frs`/`result.casdm2fr` is
+`FragmentSQD` uses `qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`
+for configuration recovery and diagonalization. It runs the requested number of
+`iterations`, using the best batch's occupancies for recovery, and returns the
+energy and RDMs of the lowest-energy batch across all iterations. Optional
+determinant carryover is handled by the addon within a call and by `FragmentSQD`
+between calls. SQD sees only the alpha one-electron Hamiltonian `h1s[0]`.
+`result.mo_coeff` with `result.casdm1frs`/`result.casdm2fr` is
 one consistent LAS wave function (RDMs in those orbitals' active space), which is
 what LAS-PDFT needs.
 
