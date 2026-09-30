@@ -13,7 +13,7 @@ from collections.abc import Callable, Sequence
 import numpy as np
 from mrh.my_pyscf.mcscf.lasscf_rdm import LASSCFNoSymm, make_fcibox
 
-__all__ = ["LASSCFNoSymm", "set_fragment_kernels", "fragment_hamiltonians"]
+__all__ = ["LASSCFNoSymm", "fragment_hamiltonians", "set_fragment_kernels"]
 
 # ``kernel(norb, nelec, h0, h1s, h2) -> (e, dm1s, dm2)``, e.g. :class:`lassqd.sqd.FragmentSQD`.
 FragmentKernel = Callable[

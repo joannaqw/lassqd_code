@@ -12,7 +12,6 @@ from qiskit.transpiler import PassManager
 from lassqd.las import LASSCFNoSymm, fragment_hamiltonians, set_fragment_kernels
 from lassqd.sqd import FragmentSQD
 
-
 # ``circuit_builder(h1, h2, norb, nelec) -> circuit``.
 # See run_lassqd for the basis contract.
 CircuitBuilder = Callable[
