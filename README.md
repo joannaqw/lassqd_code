@@ -1,150 +1,26 @@
-LASSQD: a code to run Sample-based quantum diagonalization as parallel fragment solver for the localized active space self-consistent field method
+# LASSQD
 
-SQD is provided by the open-source [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd)
-package; this repo no longer vendors its own copy.
+Sample-based quantum diagonalization (SQD) as a fragment solver for the localized
+active space self-consistent field (LASSCF) method.
 
-LASSCF is provided by [mrh](https://github.com/MatthewRHermes/mrh), installed as a package;
-this repo no longer vendors a copy of it either. `lassqd/las.py` is the interface to mrh's
-RDM-based LASSCF (`mrh.my_pyscf.mcscf.lasscf_rdm`).
+LASSQD combines [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) with
+[mrh](https://github.com/MatthewRHermes/mrh)'s RDM-based LASSCF
+(`mrh.my_pyscf.mcscf.lasscf_rdm`). Both are installed as dependencies.
 
-contains:
-- `lassqd/`: the LASSQD package
-- `examples/`: FeFe LASSQD calculations on a classical simulator and on IBM hardware, and SQD-PDFT (see `examples/README.md`)
-- `tests/`: pytest tests
-- `pyproject.toml`: package metadata and dependencies
+Start with the [Run LASSQD notebook](docs/lassqd.ipynb) to build an H₁₂ system
+from scratch, run two H₆ fragments with local ffsim sampling and a Fulqrum batch
+solver, and compare the result with classical LASSCF.
 
-Start with [Run LASSQD](docs/lassqd.ipynb) to build an H₁₂
-system from scratch, run two H₆ fragments with local ffsim sampling, and compare
-the result with classical LASSCF.
+## Repository contents
 
-## The `lassqd` package
-
-Each hybrid cycle runs at fixed orbitals: the fragment Hamiltonians are turned into
-circuits, all fragment circuits are sampled in one job, and then SQD on
-each fragment's counts is the fragment solver for one LASSCF orbital step.
-
-- `lassqd.las`: `LASSCFNoSymm`, `fragment_hamiltonians`, `set_fragment_kernels` (mrh interface)
-- `lassqd.sqd`: `FragmentSQD`, the SQD fragment kernel (configuration recovery, optional determinant carryover between cycles)
-- `lassqd.hybrid`: `run_lassqd`, the hybrid loop; it samples with any qiskit SamplerV2 primitive (ffsim, Aer, IBM Runtime, ...)
-- `lassqd.pdft`: `lassqd_pdft_energy` (LAS-PDFT on the SQD RDMs), `save_rdms`, `load_rdms`
-
-`run_lassqd` requires a `circuit_builder(h1, h2, norb, nelec)` callable. Define
-`prepare_fragment` as in the [tutorial](docs/lassqd.ipynb) or the
-[FeFe example](examples/fefe_lassqd/lassqd_fefe.py), then pass it explicitly:
-
-```python
-from functools import partial
-
-import ffsim
-from qiskit_addon_sqd.fermion import solve_sci_batch
-
-from lassqd import FragmentSQD, LASSCFNoSymm, lassqd_pdft_energy, run_lassqd
-
-las = LASSCFNoSymm(mf, (5, 5), ((4, 2), (2, 4)), spin_sub=(3, 3))
-solvers = [
-    FragmentSQD(
-        samples_per_batch=50,
-        max_iterations=6,
-        num_batches=15,
-        sci_solver=partial(solve_sci_batch, spin_sq=2.0, max_cycle=200, tol=1e-12),
-    )
-    for _ in range(las.nfrags)
-]
-sampler = ffsim.qiskit.FfsimSampler()
-result = run_lassqd(
-    las,
-    mo_coeff,
-    solvers,
-    sampler,
-    circuit_builder=prepare_fragment,
-    glue_circuits=False,
-    shots=100_000,
-)
-e_pdft = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_coeff)
-```
-
-The builder receives integrals in the LAS basis (`h2` in chemists' notation).
-It must return an unmeasured circuit with `2 * norb` qubits whose occupations
-refer to the fragment ROHF basis returned by `lassqd.basis.fragment_mo_basis`,
-which is also used by `FragmentSQD`. Alpha orbitals occupy qubits `0..norb-1`
-and beta orbitals `norb..2*norb-1`. Orbital and electron counts may be NumPy
-integers; convert them to Python integers for Qiskit.
-
-There is no default ansatz. The example builders choose CCSD-initialized LUCJ
-and specify their interaction pairs, layer count, and compression settings
-locally. Code using the former `lassqd.lucj_circuit` default must now supply
-its own builder through `circuit_builder`.
-
-For classical LUCJ sampling, use `FfsimSampler` with `glue_circuits=False` and
-no pass manager. Each fragment is a separate measured circuit in the same job,
-so ffsim works in each fragment's fixed electron-number sector. The example above
-has two (6e,5o) fragments: 10 qubits and 50 state amplitudes each. The larger
-classical FeFe example has two (6e,10o) fragments: 20 qubits and 9,450 amplitudes each.
-
-The default `glue_circuits=True` glues the fragments into one circuit with
-one classical register per fragment, as used by the IBM hardware example. Aer
-and IBM Runtime require a `pass_manager` that compiles the native ffsim gates;
-use `generate_preset_pass_manager(...)` with `pre_init = ffsim.qiskit.PRE_INIT`.
-`shots` is the number of samples per fragment per cycle in either mode.
-
-`FragmentSQD` uses `qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`
-for configuration recovery and diagonalization. It runs up to `max_iterations`
-rounds, using the best batch's occupancies for recovery, and returns the
-energy and RDMs of the lowest-energy batch across all iterations. Optional
-determinant carryover is handled by the addon within a call and by `FragmentSQD`
-between calls. SQD sees only the alpha one-electron Hamiltonian `h1s[0]`.
-`result.mo_coeff` with `result.casdm1frs`/`result.casdm2fr` is
-one consistent LAS wave function (RDMs in those orbitals' active space), which is
-what LAS-PDFT needs.
-
-`FragmentSQD(samples_per_batch, *, output_dir=None, verbose=logger.INFO, **sqd_options)`
-passes SQD options to `diagonalize_fermionic_hamiltonian` using the addon's names
-and defaults. Only `samples_per_batch` is required; `output_dir` and `verbose`
-configure the wrapper. The Hamiltonian, orbital and electron counts come from the
-fragment kernel arguments; the sampled `BitArray` is built from `solver.counts`.
-
-The addon defaults currently use one batch, at most 100 iterations, convergence
-tolerances `energy_tol=1e-8` and `occupancies_tol=1e-5`, and
-`carryover_threshold=1e-4`. Carryover also persists between fragment calls.
-Set `carryover_threshold=None` (or `np.inf`) to disable it. Set either convergence
-tolerance to `0.0` to run all requested iterations.
-
-For example, use five batches and limit each spin sector to 100 strings:
-
-```python
-solver = FragmentSQD(
-    samples_per_batch=50,
-    max_iterations=100,
-    num_batches=5,
-    energy_tol=1e-8,
-    occupancies_tol=1e-5,
-    max_dim=100,
-    seed=0,
-)
-```
-
-Both convergence criteria must be satisfied to stop early. Histories contain only
-completed iterations. Options are stored in `solver.sqd_options` and can be
-updated between calls, for example `solver.sqd_options["max_dim"] = 200`. The
-`seed` option becomes a persistent NumPy generator on use, so repeated calls
-advance the same random stream. A custom `callback(results)` runs after internal
-history recording and receives the addon's list of `SCIResult` objects, with energies
-excluding `h0` and states in the fragment ROHF basis. A custom `sci_solver` accepts
-`(ci_strings, h1, h2, norb, nelec)` and returns that list; it controls its own spin
-constraint and Davidson settings. Explicit configurations are merged with
-carryover from the preceding call before the addon applies `max_dim`.
-Explicit configurations and `initial_occupancies` use the current fragment ROHF basis.
-
-Code using the previous constructor should replace `iterations` with
-`max_iterations` and `n_batches` with `num_batches`, and pass these as keyword
-arguments. Early stopping and carryover are now enabled by default.
-
-With `sci_solver=None`, the addon uses `solve_sci_batch` with its default Davidson
-settings and no total-spin penalty. To set a spin target or change Davidson
-settings, pass a configured solver such as
-`partial(solve_sci_batch, spin_sq=2.0, max_cycle=200, tol=1e-12)`, as above.
-These settings belong to the batch solver; `energy_tol` and `occupancies_tol`
-control convergence of configuration recovery.
+| Path | Contents |
+| --- | --- |
+| [lassqd/](lassqd/) | LASSQD package |
+| [docs/lassqd.ipynb](docs/lassqd.ipynb) | H₁₂ tutorial with local sampling and Fulqrum |
+| [examples/](examples/README.md) | FeFe calculations with classical sampling, IBM hardware, and SQD-PDFT |
+| [tests/](tests/) | pytest tests |
+| [pyproject.toml](pyproject.toml) | Package metadata, dependencies, and development tools |
+| [uv.lock](uv.lock) | Locked dependency versions for uv |
 
 ## Installation
 
@@ -166,7 +42,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # Build prerequisites: PySCF must be installed before the native extensions build.
-python -m pip install --upgrade pip 'setuptools>=77' wheel setuptools-scm 'cmake>=3.19,<4' 'pyscf==2.14.0'
+python -m pip install --upgrade \
+  pip 'setuptools>=77' wheel setuptools-scm 'cmake>=3.19,<4' 'pyscf==2.14.0'
 python -m pip install --no-build-isolation \
   -e 'git+https://github.com/MatthewRHermes/mrh.git@f007765830b62c83aef5839119732a63f5e463e0#egg=mrh' \
   -e .
@@ -207,18 +84,22 @@ uv sync --python 3.14
 `uv sync` creates `.venv`, installs LASSQD and its development dependencies, and
 builds the native extensions automatically. `pyproject.toml` supplies the extra
 build requirements, including CMake and the pinned PySCF version, in isolated
-build environments. No separate prerequisite installation or activation is
-needed.
+build environments. No separate Python build-tool installation or environment
+activation is needed.
 
 Keep `.deps/mrh`: the configured editable source uses its Python code and
 compiled libraries. The checkout lives outside `.venv` so it survives recreating
 the environment. Subsequent setup only needs `uv sync`.
 
 Run scripts with `uv run python path/to/script.py`. For the IBM hardware example,
-install with `uv sync --extra ibm` and run with `uv run --extra ibm python
-path/to/script.py`.
+install with `uv sync --extra ibm` and run with
+`uv run --extra ibm python path/to/script.py`.
 
 ## Running the notebook
+
+The [H₁₂ tutorial](docs/lassqd.ipynb) uses Fulqrum for the SQD batch solver.
+Fulqrum and ipykernel are included in the `dev` dependency group, which uv installs
+by default. With pip, install that group explicitly as shown below.
 
 For the small tutorial calculation, use one thread for OpenMP, OpenBLAS, and MKL
 to avoid the overhead of coordinating many CPU threads. Set these variables in
@@ -235,19 +116,192 @@ After installing LASSQD, run from the repository root. With the pip environment
 activated:
 
 ```bash
-python -m pip install jupyterlab ipykernel
+python -m pip install --group dev jupyterlab
 python -m jupyterlab docs/lassqd.ipynb
 ```
 
 With uv:
 
 ```bash
-uv run --with jupyterlab --with ipykernel python -m jupyterlab docs/lassqd.ipynb
+uv run --with jupyterlab python -m jupyterlab docs/lassqd.ipynb
 ```
 
 Select the Python kernel from that environment, then run the cells in order.
 Restart Jupyter and its kernel if you change the thread settings after launch.
 For larger calculations, adjust the thread counts to the CPU resources available.
+
+## The `lassqd` package
+
+Each hybrid cycle builds fragment Hamiltonians at fixed orbitals, prepares and
+samples all fragment circuits in one job, and solves each fragment with SQD.
+LASSCF then uses the resulting reduced density matrices (RDMs) for one orbital
+step before the next cycle.
+
+| Module | Interface |
+| --- | --- |
+| [lassqd.las](lassqd/las.py) | `LASSCFNoSymm`, `fragment_hamiltonians`, and `set_fragment_kernels`: the mrh interface |
+| [lassqd.basis](lassqd/basis.py) | `fragment_mo_basis` and `fragment_rohf`: fragment orbital preparation |
+| [lassqd.sqd](lassqd/sqd.py) | `FragmentSQD`: configuration recovery and determinant carryover |
+| [lassqd.hybrid](lassqd/hybrid.py) | `run_lassqd` and `HybridResult`: the hybrid loop and its result |
+| [lassqd.pdft](lassqd/pdft.py) | `lassqd_pdft_energy`, `save_rdms`, and `load_rdms`: LAS-PDFT and wave-function storage |
+
+### Usage
+
+`run_lassqd` requires a `circuit_builder(h1, h2, norb, nelec)` callable. Define
+`prepare_fragment` as in the [tutorial](docs/lassqd.ipynb) or the
+[FeFe example](examples/fefe_lassqd/lassqd_fefe.py), then pass it explicitly.
+The sketch below assumes that `mf` is a prepared PySCF mean-field object and
+`mo_coeff` contains localized orbitals for the two (6e,5o) fragments:
+
+```python
+from functools import partial
+
+import ffsim
+from qiskit_addon_sqd.fermion import solve_sci_batch
+
+from lassqd import FragmentSQD, LASSCFNoSymm, lassqd_pdft_energy, run_lassqd
+
+las = LASSCFNoSymm(mf, (5, 5), ((4, 2), (2, 4)), spin_sub=(3, 3))
+solvers = [
+    FragmentSQD(
+        samples_per_batch=50,
+        max_iterations=6,
+        num_batches=15,
+        sci_solver=partial(solve_sci_batch, spin_sq=2.0, max_cycle=200, tol=1e-12),
+    )
+    for _ in range(las.nfrags)
+]
+sampler = ffsim.qiskit.FfsimSampler()
+result = run_lassqd(
+    las,
+    mo_coeff,
+    solvers,
+    sampler,
+    circuit_builder=prepare_fragment,
+    glue_circuits=False,
+    shots=100_000,
+)
+e_pdft = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_coeff)
+```
+
+`max_cycles=50` and `conv_tol=1e-5` are the hybrid loop defaults. Check
+`result.converged` and `result.e_hist` before using the final energy: convergence
+means that the absolute energy change between consecutive cycles is below
+`conv_tol`.
+
+### Circuit builder
+
+The builder receives integrals in the LAS basis (`h2` in chemists' notation).
+It must return an unmeasured circuit with `2 * norb` qubits whose occupations
+refer to the fragment ROHF basis returned by `lassqd.basis.fragment_mo_basis`,
+which is also used by `FragmentSQD`. Alpha orbitals occupy qubits `0..norb-1`
+and beta orbitals `norb..2*norb-1`. Orbital and electron counts may be NumPy
+integers; convert them to Python integers for Qiskit.
+
+There is no default ansatz. The example builders choose CCSD-initialized local
+unitary cluster Jastrow (LUCJ) circuits and specify their interaction pairs,
+layer count, and compression settings locally. Code using the former
+`lassqd.lucj_circuit` default must now supply its own builder through
+`circuit_builder`.
+
+### Sampling
+
+For classical LUCJ sampling, use `FfsimSampler` with `glue_circuits=False` and
+no pass manager. Each fragment is a separate measured circuit in the same job,
+so ffsim works in each fragment's fixed electron-number sector. The example above
+has two (6e,5o) fragments: 10 qubits and 50 state amplitudes each. The larger
+classical FeFe example has two (6e,10o) fragments: 20 qubits and 9,450 amplitudes each.
+
+The default `glue_circuits=True` glues the fragments into one circuit with
+one classical register per fragment, as used by the IBM hardware example. Aer
+and IBM Runtime require a `pass_manager` to compile circuits containing native
+ffsim gates. Create it with `generate_preset_pass_manager(...)`, then set
+`pass_manager.pre_init = ffsim.qiskit.PRE_INIT`.
+`shots` is the number of samples per fragment per cycle in either mode;
+`shots=None` uses the sampler's default.
+
+### Fragment SQD
+
+`FragmentSQD` uses `qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`
+for configuration recovery and diagonalization. It runs up to `max_iterations`
+rounds, using the best batch's occupancies for recovery, and returns the
+energy and RDMs of the lowest-energy batch across all iterations. Optional
+determinant carryover is handled by the addon within a call and by `FragmentSQD`
+between calls. Circuit construction and SQD use only the alpha one-electron
+Hamiltonian `h1s[0]`, including when the embedding is spin-dependent.
+
+`FragmentSQD(samples_per_batch, *, output_dir=None, verbose=logger.INFO, **sqd_options)`
+passes SQD options to `diagonalize_fermionic_hamiltonian` using the addon's names
+and defaults. Only `samples_per_batch` is required; `output_dir` and `verbose`
+configure the wrapper. The Hamiltonian, orbital and electron counts come from the
+fragment kernel arguments; the sampled `BitArray` is built from `solver.counts`.
+
+The defaults in the locked qiskit-addon-sqd version are:
+
+| Option | Default |
+| --- | --- |
+| `num_batches` | `1` |
+| `max_iterations` | `100` |
+| `energy_tol` | `1e-8` |
+| `occupancies_tol` | `1e-5` |
+| `carryover_threshold` | `1e-4` |
+
+Carryover also persists between fragment calls.
+Set `carryover_threshold=None` (or `np.inf`) to disable it. Set either convergence
+tolerance to `0.0` to run all requested iterations.
+
+For example, use five batches and limit each spin sector to 100 strings:
+
+```python
+solver = FragmentSQD(
+    samples_per_batch=50,
+    max_iterations=100,
+    num_batches=5,
+    energy_tol=1e-8,
+    occupancies_tol=1e-5,
+    max_dim=100,
+    seed=0,
+)
+```
+
+Both convergence criteria must be satisfied to stop early. Histories contain only
+completed iterations. Options are stored in `solver.sqd_options` and can be
+updated between calls, for example `solver.sqd_options["max_dim"] = 200`. The
+`seed` option becomes a persistent NumPy generator on use, so repeated calls
+advance the same random stream. A custom `callback(results)` runs after internal
+history recording and receives the addon's list of `SCIResult` objects, with energies
+excluding `h0` and states in the fragment ROHF basis. A custom `sci_solver` accepts
+`(ci_strings, h1, h2, norb, nelec)` and returns that list; it controls its own spin
+constraint and Davidson settings. Explicit configurations are merged with
+carryover from the preceding call before the addon applies `max_dim`.
+Explicit configurations and `initial_occupancies` use the current fragment ROHF basis.
+
+Code using the previous constructor should replace `iterations` with
+`max_iterations` and `n_batches` with `num_batches`, and pass these as keyword
+arguments. Early stopping and carryover are enabled by default.
+
+With `sci_solver=None`, the addon uses `solve_sci_batch` with its default Davidson
+settings and no total-spin penalty. To set a spin target or change Davidson
+settings, pass a configured solver such as
+`partial(solve_sci_batch, spin_sq=2.0, max_cycle=200, tol=1e-12)`, as above.
+These settings belong to the batch solver; `energy_tol` and `occupancies_tol`
+control convergence of configuration recovery.
+
+The [tutorial](docs/lassqd.ipynb) demonstrates a custom `sci_solver` built with
+Fulqrum and SciPy's `eigsh`, without a total-spin penalty.
+
+### LAS-PDFT and saved wave functions
+
+`result.mo_coeff`, `result.casdm1frs`, and `result.casdm2fr` describe one consistent
+LAS wave function: the RDMs use the active space of the returned orbitals. Pass
+them together to `lassqd_pdft_energy`, which uses the `tPBE` on-top functional by
+default.
+
+To save that wave function, pass `mo_coeff=result.mo_coeff` to `save_rdms` along
+with the fragment RDMs. `load_rdms` returns `(casdm1frs, casdm2fr, mo_coeff)`;
+`mo_coeff` is `None` for older files that contain only RDMs. See the
+[FeFe example notes](examples/README.md#fefe_lassqd_pdft) before using the
+historical data committed with that example.
 
 ## Tests
 
@@ -255,11 +309,11 @@ With pip:
 
 ```bash
 python -m pip install --group dev
-OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python -m pytest
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest
 ```
 
 With uv, pytest is included in the default development group:
 
 ```bash
-OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 uv run python -m pytest
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 uv run python -m pytest
 ```
