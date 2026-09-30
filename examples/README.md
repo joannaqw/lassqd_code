@@ -11,8 +11,8 @@ with LUCJ circuits (`lassqd.run_lassqd`). Run each script from its own directory
 with `FfsimSampler` (100k shots per fragment), up to 50 hybrid cycles with determinant
 carryover between cycles. `glue_circuits=False` submits the two native LUCJ
 circuits in one sampler job without transpilation.
-Its custom `sci_solver.py` solves 10 Davidson roots per batch and retains the first,
-with the fragment's minimum-spin constraint, 200 maximum cycles and `1e-16`
+Its `solve_sci_batch` function solves 10 Davidson roots per batch and retains the
+first, with the fragment's minimum-spin constraint, 200 maximum cycles and `1e-16`
 tolerance. It is passed to `FragmentSQD` through the `sci_solver` option.
 
 - Inputs: `fefe_as.npy` and `as_increase_avas.npy` (initial orbitals). **These are
