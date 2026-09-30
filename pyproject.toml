@@ -8,13 +8,16 @@ version = "0.1.0"
 description = "Sample-based quantum diagonalization as a fragment solver for LASSCF"
 readme = "README.md"
 requires-python = ">=3.10"
-# mrh (https://github.com/MatthewRHermes/mrh) and pyscf-forge are also required
-# but are installed separately; see README.md.
+# See README.md for the staged build prerequisites.
 dependencies = [
     "numpy",
-    "scipy",
+    # mrh's LinearOperator subclasses are incompatible with SciPy 1.18.
+    "scipy<1.18",
     "h5py",
-    "pyscf",
+    "pyscf==2.14.0",
+    "pyscf-forge @ git+https://github.com/pyscf/pyscf-forge.git@f55abdb2806697c4132c416a43ddebadf93e3b1a",
+    # Supplied by the editable Git installation in README.md (commit f0077658).
+    "mrh==0.1.dev5906+gf00776583",
     "qiskit",
     "qiskit-aer",
     "qiskit-addon-sqd",
@@ -23,10 +26,24 @@ dependencies = [
 
 [project.optional-dependencies]
 ibm = ["qiskit-ibm-runtime"]
-test = ["pytest"]
 
 [tool.setuptools]
 packages = ["lassqd"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.uv.sources]
+# Keep the checkout outside .venv so uv can create/recreate the environment.
+mrh = { path = ".deps/mrh", editable = true }
+
+[tool.uv.extra-build-dependencies]
+# Supply the upstream build requirements in isolated environments. Use the
+# same PySCF version as the runtime dependency for both native builds.
+mrh = ["wheel", "cmake>=3.19,<4", "pyscf==2.14.0"]
+pyscf-forge = ["cmake>=3.19,<4", "pyscf==2.14.0"]
