@@ -7,8 +7,10 @@ with LUCJ circuits (`lassqd.run_lassqd`). Run each script from its own directory
 
 ## `fefe_lassqd/`
 
-`lassqd_fefe.py`: (10e,10o) per fragment, circuits sampled classically with Aer
-(MPS, 100k shots), up to 50 hybrid cycles with determinant carryover between cycles.
+`lassqd_fefe.py`: (6e,10o) per fragment (20 qubits each), circuits sampled classically
+with `FfsimSampler` (100k shots per fragment), up to 50 hybrid cycles with determinant
+carryover between cycles. `glue_circuits=False` submits the two native LUCJ
+circuits in one sampler job without transpilation.
 Its custom `sci_solver.py` solves 10 Davidson roots per batch and retains the first,
 with the fragment's minimum-spin constraint, 200 maximum cycles and `1e-16`
 tolerance. It is passed to `FragmentSQD` through the `sci_solver` option.
@@ -20,7 +22,7 @@ tolerance. It is passed to `FragmentSQD` through the `sci_solver` option.
 
 ## `fefe_lassqd_pdft/`
 
-`lassqd_fefe_ibm.py`: (5e,5o) per fragment from AVAS Fe 3d orbitals, sampled on IBM
+`lassqd_fefe_ibm.py`: (6e,5o) per fragment from AVAS Fe 3d orbitals, sampled on IBM
 Quantum hardware (`ibm_sherbrooke`, 30k shots, fixed qubit layout), then the SQD-PDFT
 (tPBE) energy. It restarts from `current_orb.npy`. Save an IBM Quantum account with
 `QiskitRuntimeService.save_account(...)` first. Each cycle writes `current_orb.npy`

@@ -16,23 +16,20 @@ contains:
 ## The `lassqd` package
 
 Each hybrid cycle runs at fixed orbitals: the fragment Hamiltonians are turned into
-circuits, all fragment circuits are glued into one job and sampled, and then SQD on
+circuits, all fragment circuits are sampled in one job, and then SQD on
 each fragment's counts is the fragment solver for one LASSCF orbital step.
 
 - `lassqd.las`: `LASSCFNoSymm`, `fragment_hamiltonians`, `set_fragment_kernels` (mrh interface)
-- `lassqd.circuits`: `lucj_circuit` (CCSD-initialized, linear-method-optimized LUCJ), `glue_circuits` (one classical register per fragment)
+- `lassqd.circuits`: `lucj_circuit` (CCSD-initialized, linear-method-optimized LUCJ)
 - `lassqd.sqd`: `FragmentSQD`, the SQD fragment kernel (configuration recovery, optional determinant carryover between cycles)
-- `lassqd.hybrid`: `run_lassqd`, the hybrid loop; it samples with any qiskit SamplerV2 primitive (Aer, IBM Runtime, ...)
+- `lassqd.hybrid`: `run_lassqd`, the hybrid loop; it samples with any qiskit SamplerV2 primitive (ffsim, Aer, IBM Runtime, ...)
 - `lassqd.pdft`: `lassqd_pdft_energy` (LAS-PDFT on the SQD RDMs), `save_rdms`, `load_rdms`
 
 ```python
 from functools import partial
 
 import ffsim
-from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_addon_sqd.fermion import solve_sci_batch
-from qiskit_aer import AerSimulator
-from qiskit_aer.primitives import SamplerV2
 
 from lassqd import FragmentSQD, LASSCFNoSymm, lassqd_pdft_energy, run_lassqd
 
@@ -46,14 +43,24 @@ solvers = [
     )
     for _ in range(las.nfrags)
 ]
-sampler = SamplerV2(options={"backend_options": {"method": "matrix_product_state"}})
-pass_manager = generate_preset_pass_manager(
-    backend=AerSimulator(method="matrix_product_state"), optimization_level=3
+sampler = ffsim.qiskit.FfsimSampler()
+result = run_lassqd(
+    las, mo_coeff, solvers, sampler, glue_circuits=False, shots=100_000
 )
-pass_manager.pre_init = ffsim.qiskit.PRE_INIT
-result = run_lassqd(las, mo_coeff, solvers, sampler, pass_manager=pass_manager, shots=100_000)
 e_pdft = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_coeff)
 ```
+
+For classical LUCJ sampling, use `FfsimSampler` with `glue_circuits=False` and
+no pass manager. Each fragment is a separate measured circuit in the same job,
+so ffsim works in each fragment's fixed electron-number sector. The example above
+has two (6e,5o) fragments: 10 qubits and 50 state amplitudes each. The larger
+classical FeFe example has two (6e,10o) fragments: 20 qubits and 9,450 amplitudes each.
+
+The default `glue_circuits=True` glues the fragments into one circuit with
+one classical register per fragment, as used by the IBM hardware example. Aer
+and IBM Runtime require a `pass_manager` that compiles the native ffsim gates;
+use `generate_preset_pass_manager(...)` with `pre_init = ffsim.qiskit.PRE_INIT`.
+`shots` is the number of samples per fragment per cycle in either mode.
 
 `FragmentSQD` uses `qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`
 for configuration recovery and diagonalization. It runs up to `max_iterations`

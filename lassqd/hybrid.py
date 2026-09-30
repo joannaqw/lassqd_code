@@ -5,10 +5,11 @@ from dataclasses import dataclass
 
 import numpy as np
 from pyscf.lib import logger
+from qiskit import ClassicalRegister, QuantumCircuit
 from qiskit.primitives import BaseSamplerV2
 from qiskit.transpiler import PassManager
 
-from lassqd.circuits import CircuitFn, glue_circuits, lucj_circuit
+from lassqd.circuits import CircuitFn, lucj_circuit
 from lassqd.las import LASSCFNoSymm, fragment_hamiltonians, set_fragment_kernels
 from lassqd.sqd import FragmentSQD
 
@@ -45,6 +46,7 @@ def run_lassqd(
     sampler: BaseSamplerV2,
     *,
     pass_manager: PassManager | None = None,
+    glue_circuits: bool = True,
     shots: int | None = None,
     circuit_fn: CircuitFn = lucj_circuit,
     max_cycles: int = 50,
@@ -56,8 +58,8 @@ def run_lassqd(
     Each cycle, at fixed orbitals:
 
     1. quantum: build ``circuit_fn(h1, h2, norb, nelec)`` for every fragment
-       Hamiltonian, glue them into one circuit, transpile it with ``pass_manager``
-       and sample it with ``sampler``;
+       Hamiltonian, optionally glue them into one circuit, transpile with
+       ``pass_manager`` and sample them in one job with ``sampler``;
     2. classical: give each fragment's counts to its solver (e.g.
        :class:`lassqd.sqd.FragmentSQD`) and let ``las.kernel`` solve the fragments
        and take one orbital step.
@@ -70,16 +72,12 @@ def run_lassqd(
             ``solvers``.
         mo_coeff: Initial molecular orbital coefficients.
         solvers: One solver per fragment, in fragment order.
-        sampler: SamplerV2 primitive, e.g. ``qiskit_aer.primitives.SamplerV2`` or
-            ``qiskit_ibm_runtime.SamplerV2``. Construct an IBM Runtime sampler with
-            ``mode=session`` to run every cycle in one session. Each job id is
-            logged so a lost result can be retrieved.
-        pass_manager: Transpiles the glued circuit before sampling, e.g. from
-            :func:`qiskit.transpiler.preset_passmanagers.generate_preset_pass_manager`
-            with ``pre_init = ffsim.qiskit.PRE_INIT`` for efficient compilation of
-            ffsim's gates. Aer and IBM Runtime samplers need one, since they do not
-            accept ffsim's gates; None samples the glued circuit as is.
-        shots: Shots per cycle; None uses the sampler's default.
+        sampler: SamplerV2 primitive used to sample the circuits.
+        pass_manager: Optional pass manager applied before sampling.
+        glue_circuits: Glue the fragments into one circuit with one classical
+            register per fragment (default). False submits each fragment as a
+            separate measured circuit in the same sampler job.
+        shots: Shots per fragment per cycle; None uses the sampler's default.
         circuit_fn: Builds the state-preparation circuit for one fragment.
         max_cycles: Maximum number of hybrid cycles.
         conv_tol: Energy convergence threshold between consecutive cycles.
@@ -102,14 +100,21 @@ def run_lassqd(
                     fragment_hamiltonians(las, mo_coeff), las.ncas_sub, las.nelecas_sub
                 )
             ]
-            circuit = glue_circuits(circuits)
+            if glue_circuits:
+                circuits = [_glue_circuits(circuits)]
+                output_registers = [(0, creg.name) for creg in circuits[0].cregs]
+            else:
+                circuits = [circuit.measure_all(inplace=False) for circuit in circuits]
+                output_registers = [
+                    (i, circuit.cregs[-1].name) for i, circuit in enumerate(circuits)
+                ]
             if pass_manager is not None:
-                circuit = pass_manager.run(circuit)
-            job = sampler.run([circuit], shots=shots)
+                circuits = [pass_manager.run(circuit) for circuit in circuits]
+            job = sampler.run(circuits, shots=shots)
             log.note("LASSQD cycle %d: sampler job %s", cycle, job.job_id())
-            data = job.result()[0].data
-            for solver, creg in zip(solvers, circuit.cregs):
-                solver.counts = data[creg.name].get_counts()
+            results = job.result()
+            for solver, (pub_index, register) in zip(solvers, output_registers):
+                solver.counts = results[pub_index].data[register].get_counts()
             set_fragment_kernels(las, solvers)
             las.kernel(mo_coeff)
             mo_coeff = las.mo_coeff
@@ -126,7 +131,11 @@ def run_lassqd(
                 break
     finally:
         las.max_cycle_macro, las.max_cycle_rdmjk = saved
-    log.note("LASSQD %s after %d cycles", ("not converged", "converged")[converged], len(e_hist))
+    log.note(
+        "LASSQD %s after %d cycles",
+        ("not converged", "converged")[converged],
+        len(e_hist),
+    )
     return HybridResult(
         converged=converged,
         e_tot=las.e_tot,
@@ -135,3 +144,28 @@ def run_lassqd(
         casdm2fr=[np.array(dm) for dm in las.casdm2fr],
         e_hist=e_hist,
     )
+
+
+def _glue_circuits(circuits: Sequence[QuantumCircuit]) -> QuantumCircuit:
+    """Place circuits side by side on one register and measure each separately.
+
+    Args:
+        circuits: Fragment circuits, in fragment order.
+
+    Returns:
+        One circuit whose qubits are the fragment circuits' qubits concatenated in
+        order, with one classical register per fragment; ``circuits[i]`` is
+        measured into ``cregs[i]``.
+    """
+    widths = [qc.num_qubits for qc in circuits]
+    glued = QuantumCircuit(sum(widths))
+    cregs = [ClassicalRegister(n) for n in widths]
+    for creg in cregs:
+        glued.add_register(creg)
+    start = 0
+    for qc, creg, n in zip(circuits, cregs, widths):
+        glued.append(qc, range(start, start + n))
+        for i in range(n):
+            glued.measure(start + i, creg[i])
+        start += n
+    return glued

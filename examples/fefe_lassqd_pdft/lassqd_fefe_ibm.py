@@ -1,4 +1,4 @@
-"""Hybrid LASSQD for the FeFe complex, (5e,5o) per Fe, on IBM Quantum hardware,
+"""Hybrid LASSQD for the FeFe complex, (6e,5o) per Fe, on IBM Quantum hardware,
 followed by an SQD-PDFT (tPBE) energy.
 
 Save an IBM Quantum account first (``QiskitRuntimeService.save_account(...)``).

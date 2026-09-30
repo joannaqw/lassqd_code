@@ -1,5 +1,5 @@
-"""Hybrid LASSQD for the FeFe complex, (10e,10o) per Fe, with LUCJ circuits sampled
-classically on Aer and determinant carryover between cycles.
+"""Hybrid LASSQD for the FeFe complex, (6e,10o) per Fe, with LUCJ circuits sampled
+classically with ffsim and determinant carryover between cycles.
 
 Needs ``fefe_as.npy`` and ``as_increase_avas.npy`` (initial orbitals) in the
 working directory; they are not tracked in the repository.
@@ -8,9 +8,6 @@ working directory; they are not tracked in the repository.
 import ffsim
 import numpy as np
 from pyscf import gto, lib, scf
-from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
-from qiskit_aer import AerSimulator
-from qiskit_aer.primitives import SamplerV2
 from sci_solver import solve_sci_batch
 
 from lassqd import FragmentSQD, LASSCFNoSymm, run_lassqd
@@ -46,16 +43,12 @@ def save_orbitals(cycle, las):
     np.save("current_orb", las.mo_coeff)
 
 
-pass_manager = generate_preset_pass_manager(
-    backend=AerSimulator(method="matrix_product_state"), optimization_level=3
-)
-pass_manager.pre_init = ffsim.qiskit.PRE_INIT
 result = run_lassqd(
     las,
     mo_localized,
     solvers,
-    SamplerV2(options={"backend_options": {"method": "matrix_product_state"}}),
-    pass_manager=pass_manager,
+    ffsim.qiskit.FfsimSampler(),
+    glue_circuits=False,
     shots=100_000,
     max_cycles=50,
     conv_tol=1e-5,

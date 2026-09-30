@@ -1,16 +1,10 @@
-"""Fragment circuits, and running them all in one job.
+"""Fragment state-preparation circuits."""
 
-Each fragment gets its own state-preparation circuit. The fragment circuits are
-glued side by side onto one register, with one classical register per fragment,
-so a single job samples every fragment; each fragment's counts are then read from
-its own register.
-"""
-
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 import numpy as np
 from pyscf import cc
-from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
+from qiskit import QuantumCircuit, QuantumRegister
 
 from lassqd.basis import fragment_mo_basis, fragment_rohf
 
@@ -19,7 +13,12 @@ CircuitFn = Callable[[np.ndarray, np.ndarray, int, tuple[int, int]], QuantumCirc
 
 
 def lucj_circuit(
-    h1: np.ndarray, h2: np.ndarray, norb: int, nelec: tuple[int, int], *, n_reps: int = 1
+    h1: np.ndarray,
+    h2: np.ndarray,
+    norb: int,
+    nelec: tuple[int, int],
+    *,
+    n_reps: int = 1,
 ) -> QuantumCircuit:
     """Build a spin-unbalanced LUCJ circuit for one fragment Hamiltonian.
 
@@ -86,28 +85,3 @@ def lucj_circuit(
     circuit.append(ffsim.qiskit.PrepareHartreeFockJW(norb, nelec), qubits)
     circuit.append(ffsim.qiskit.UCJOpSpinUnbalancedJW(operator(result.x)), qubits)
     return circuit
-
-
-def glue_circuits(circuits: Sequence[QuantumCircuit]) -> QuantumCircuit:
-    """Place circuits side by side on one register and measure each separately.
-
-    Args:
-        circuits: Fragment circuits, in fragment order.
-
-    Returns:
-        One circuit whose qubits are the fragment circuits' qubits concatenated in
-        order, with one classical register per fragment; ``circuits[i]`` is
-        measured into ``cregs[i]``.
-    """
-    widths = [qc.num_qubits for qc in circuits]
-    glued = QuantumCircuit(sum(widths))
-    cregs = [ClassicalRegister(n) for n in widths]
-    for creg in cregs:
-        glued.add_register(creg)
-    start = 0
-    for qc, creg, n in zip(circuits, cregs, widths):
-        glued.append(qc, range(start, start + n))
-        for i in range(n):
-            glued.measure(start + i, creg[i])
-        start += n
-    return glued
