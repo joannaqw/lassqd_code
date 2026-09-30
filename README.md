@@ -20,7 +20,7 @@ circuits, all fragment circuits are sampled in one job, and then SQD on
 each fragment's counts is the fragment solver for one LASSCF orbital step.
 
 - `lassqd.las`: `LASSCFNoSymm`, `fragment_hamiltonians`, `set_fragment_kernels` (mrh interface)
-- `lassqd.circuits`: `lucj_circuit` (CCSD-initialized, linear-method-optimized LUCJ)
+- `lassqd.circuits`: `lucj_circuit` (LUCJ initialized by compressed factorization of CCSD amplitudes)
 - `lassqd.sqd`: `FragmentSQD`, the SQD fragment kernel (configuration recovery, optional determinant carryover between cycles)
 - `lassqd.hybrid`: `run_lassqd`, the hybrid loop; it samples with any qiskit SamplerV2 primitive (ffsim, Aer, IBM Runtime, ...)
 - `lassqd.pdft`: `lassqd_pdft_energy` (LAS-PDFT on the SQD RDMs), `save_rdms`, `load_rdms`
