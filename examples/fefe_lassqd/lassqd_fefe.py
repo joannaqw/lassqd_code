@@ -5,12 +5,14 @@ Needs ``fefe_as.npy`` and ``as_increase_avas.npy`` (initial orbitals) in the
 working directory; they are not tracked in the repository.
 """
 
+import ffsim
 import numpy as np
 from pyscf import gto, lib, scf
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_aer import AerSimulator
 from qiskit_aer.primitives import SamplerV2
 
-from lassqd import FragmentSQD, LASSCFNoSymm, preset_pass_manager, run_lassqd
+from lassqd import FragmentSQD, LASSCFNoSymm, run_lassqd
 
 lib.logger.TIMER_LEVEL = lib.logger.INFO
 basis = {"Fe": "6-31g", "C": "6-31g", "H": "6-31g", "O": "6-31g", "N": "6-31g"}
@@ -45,12 +47,16 @@ def save_orbitals(cycle, las):
     np.save("current_orb", las.mo_coeff)
 
 
+pass_manager = generate_preset_pass_manager(
+    backend=AerSimulator(method="matrix_product_state"), optimization_level=3
+)
+pass_manager.pre_init = ffsim.qiskit.PRE_INIT
 result = run_lassqd(
     las,
     mo_localized,
     solvers,
     SamplerV2(options={"backend_options": {"method": "matrix_product_state"}}),
-    pass_manager=preset_pass_manager(AerSimulator(method="matrix_product_state")),
+    pass_manager=pass_manager,
     shots=100_000,
     max_cycles=50,
     conv_tol=1e-5,

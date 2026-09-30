@@ -11,9 +11,6 @@ from collections.abc import Callable, Sequence
 import numpy as np
 from pyscf import cc
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
-from qiskit.providers import BackendV2
-from qiskit.transpiler import StagedPassManager
-from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 
 from lassqd.basis import fragment_mo_basis, fragment_rohf
 
@@ -114,35 +111,3 @@ def glue_circuits(circuits: Sequence[QuantumCircuit]) -> QuantumCircuit:
             glued.measure(start + i, creg[i])
         start += n
     return glued
-
-
-def preset_pass_manager(
-    backend: BackendV2,
-    *,
-    optimization_level: int = 3,
-    initial_layout: Sequence[int] | None = None,
-) -> StagedPassManager:
-    """Build a pass manager that transpiles glued fragment circuits for ``backend``.
-
-    This is qiskit's ``generate_preset_pass_manager`` with ffsim's ``PRE_INIT``
-    stage, which compiles ffsim's gates, such as those in :func:`lucj_circuit`,
-    efficiently.
-
-    Args:
-        backend: Backend to transpile for, e.g. an IBM backend or an
-            ``AerSimulator``.
-        optimization_level: Preset pass manager optimization level.
-        initial_layout: Physical qubit for each circuit qubit.
-
-    Returns:
-        The pass manager, e.g. for :func:`lassqd.run_lassqd`'s ``pass_manager``.
-    """
-    import ffsim
-
-    pass_manager = generate_preset_pass_manager(
-        backend=backend,
-        optimization_level=optimization_level,
-        initial_layout=initial_layout,
-    )
-    pass_manager.pre_init = ffsim.qiskit.PRE_INIT
-    return pass_manager

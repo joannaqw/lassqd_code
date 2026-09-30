@@ -75,9 +75,10 @@ def run_lassqd(
             ``mode=session`` to run every cycle in one session. Each job id is
             logged so a lost result can be retrieved.
         pass_manager: Transpiles the glued circuit before sampling, e.g. from
-            :func:`lassqd.circuits.preset_pass_manager`. Aer and IBM Runtime
-            samplers need one, since they do not accept ffsim's gates; None samples
-            the glued circuit as is.
+            :func:`qiskit.transpiler.preset_passmanagers.generate_preset_pass_manager`
+            with ``pre_init = ffsim.qiskit.PRE_INIT`` for efficient compilation of
+            ffsim's gates. Aer and IBM Runtime samplers need one, since they do not
+            accept ffsim's gates; None samples the glued circuit as is.
         shots: Shots per cycle; None uses the sampler's default.
         circuit_fn: Builds the state-preparation circuit for one fragment.
         max_cycles: Maximum number of hybrid cycles.

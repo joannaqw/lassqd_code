@@ -20,21 +20,26 @@ circuits, all fragment circuits are glued into one job and sampled, and then SQD
 each fragment's counts is the fragment solver for one LASSCF orbital step.
 
 - `lassqd.las`: `LASSCFNoSymm`, `fragment_hamiltonians`, `set_fragment_kernels` (mrh interface)
-- `lassqd.circuits`: `lucj_circuit` (CCSD-initialized, linear-method-optimized LUCJ), `glue_circuits` (one classical register per fragment), `preset_pass_manager` (qiskit's preset pass manager with ffsim's `PRE_INIT` stage)
+- `lassqd.circuits`: `lucj_circuit` (CCSD-initialized, linear-method-optimized LUCJ), `glue_circuits` (one classical register per fragment)
 - `lassqd.sqd`: `FragmentSQD`, the SQD fragment kernel (configuration recovery, optional determinant carryover between cycles), and `solve_sci_nroots`
 - `lassqd.hybrid`: `run_lassqd`, the hybrid loop; it samples with any qiskit SamplerV2 primitive (Aer, IBM Runtime, ...)
 - `lassqd.pdft`: `lassqd_pdft_energy` (LAS-PDFT on the SQD RDMs), `save_rdms`, `load_rdms`
 
 ```python
+import ffsim
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_aer import AerSimulator
 from qiskit_aer.primitives import SamplerV2
 
-from lassqd import FragmentSQD, LASSCFNoSymm, lassqd_pdft_energy, preset_pass_manager, run_lassqd
+from lassqd import FragmentSQD, LASSCFNoSymm, lassqd_pdft_energy, run_lassqd
 
 las = LASSCFNoSymm(mf, (5, 5), ((4, 2), (2, 4)), spin_sub=(3, 3))
 solvers = [FragmentSQD(iterations=6, n_batches=15, samples_per_batch=50) for _ in range(las.nfrags)]
 sampler = SamplerV2(options={"backend_options": {"method": "matrix_product_state"}})
-pass_manager = preset_pass_manager(AerSimulator(method="matrix_product_state"))
+pass_manager = generate_preset_pass_manager(
+    backend=AerSimulator(method="matrix_product_state"), optimization_level=3
+)
+pass_manager.pre_init = ffsim.qiskit.PRE_INIT
 result = run_lassqd(las, mo_coeff, solvers, sampler, pass_manager=pass_manager, shots=100_000)
 e_pdft = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_coeff)
 ```

@@ -8,16 +8,17 @@ Each cycle writes the current LAS wave function (orbitals + fragment RDMs) to
 
 from pathlib import Path
 
+import ffsim
 import numpy as np
 from pyscf import gto, lib, scf
 from pyscf.mcscf import avas
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2, Session
 
 from lassqd import (
     FragmentSQD,
     LASSCFNoSymm,
     lassqd_pdft_energy,
-    preset_pass_manager,
     run_lassqd,
     save_rdms,
 )
@@ -50,7 +51,12 @@ solvers = [
 spin_a_layout = [60, 61, 62, 72, 81, 82, 83, 92, 102, 103]
 spin_b_layout = [58, 71, 77, 78, 79, 91, 98, 99, 100, 101]
 backend = QiskitRuntimeService().backend("ibm_sherbrooke")
-pass_manager = preset_pass_manager(backend, initial_layout=spin_a_layout + spin_b_layout)
+pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+    initial_layout=spin_a_layout + spin_b_layout,
+)
+pass_manager.pre_init = ffsim.qiskit.PRE_INIT
 
 
 def save_wave_function(cycle, las):
