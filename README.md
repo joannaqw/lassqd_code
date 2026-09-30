@@ -13,6 +13,10 @@ contains:
 - `tests/`: pytest tests
 - `pyproject.toml`: package metadata and dependencies
 
+Start with [Run LASSQD](docs/lassqd.ipynb) to build an H₁₂
+system from scratch, run two H₆ fragments with local ffsim sampling, and compare
+the result with classical LASSCF.
+
 ## The `lassqd` package
 
 Each hybrid cycle runs at fixed orbitals: the fragment Hamiltonians are turned into
@@ -192,6 +196,37 @@ the environment. Subsequent setup only needs `uv sync`.
 Run scripts with `uv run python path/to/script.py`. For the IBM hardware example,
 install with `uv sync --extra ibm` and run with `uv run --extra ibm python
 path/to/script.py`.
+
+## Running the notebook
+
+For the small tutorial calculation, use one thread for OpenMP, OpenBLAS, and MKL
+to avoid the overhead of coordinating many CPU threads. Set these variables in
+your shell before starting Jupyter so the kernel inherits them before importing
+the numerical libraries:
+
+```bash
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+```
+
+After installing LASSQD, run from the repository root. With the pip environment
+activated:
+
+```bash
+python -m pip install jupyterlab ipykernel
+python -m jupyterlab docs/lassqd.ipynb
+```
+
+With uv:
+
+```bash
+uv run --with jupyterlab --with ipykernel python -m jupyterlab docs/lassqd.ipynb
+```
+
+Select the Python kernel from that environment, then run the cells in order.
+Restart Jupyter and its kernel if you change the thread settings after launch.
+For larger calculations, adjust the thread counts to the CPU resources available.
 
 ## Tests
 
