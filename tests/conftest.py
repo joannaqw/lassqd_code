@@ -42,7 +42,9 @@ class FullSpaceSampler(BaseSamplerV2):
         data = DataBin(
             **{
                 creg.name: BitArray.from_counts(full_counts(n, ne), num_bits=creg.size)
-                for creg, n, ne in zip(circuit.cregs, self.las.ncas_sub, self.las.nelecas_sub)
+                for creg, n, ne in zip(
+                    circuit.cregs, self.las.ncas_sub, self.las.nelecas_sub
+                )
             }
         )
         job = PrimitiveJob(lambda: PrimitiveResult([SamplerPubResult(data)]))
@@ -57,7 +59,9 @@ def empty_circuit(h1, h2, norb, nelec):
 @pytest.fixture
 def h4():
     """Two closed-shell H2 fragments, (2e, 2o) each, in 6-31G."""
-    mol = gto.M(atom="H 0 0 0; H 0.8 0 0; H 3.0 0 0; H 3.8 0 0", basis="6-31g", verbose=0)
+    mol = gto.M(
+        atom="H 0 0 0; H 0.8 0 0; H 3.0 0 0; H 3.8 0 0", basis="6-31g", verbose=0
+    )
     mf = scf.RHF(mol).run()
     las = LASSCFNoSymm(mf, (2, 2), ((1, 1), (1, 1)), spin_sub=(1, 1))
     mo = las.localize_init_guess(([0, 1], [2, 3]), las.sort_mo([1, 2, 3, 4]))

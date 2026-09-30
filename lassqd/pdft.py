@@ -46,8 +46,12 @@ def save_rdms(
         dm1_group = f.create_group("casdm1frs")
         dm2_group = f.create_group("casdm2frs")
         for i, (dm1, dm2) in enumerate(zip(casdm1frs, casdm2fr)):
-            dm1_group.create_dataset(str(i), data=np.reshape(dm1, (-1,) + np.shape(dm1)[-3:]))
-            dm2_group.create_dataset(str(i), data=np.reshape(dm2, (-1,) + np.shape(dm2)[-4:]))
+            dm1_group.create_dataset(
+                str(i), data=np.reshape(dm1, (-1,) + np.shape(dm1)[-3:])
+            )
+            dm2_group.create_dataset(
+                str(i), data=np.reshape(dm2, (-1,) + np.shape(dm2)[-4:])
+            )
         if mo_coeff is not None:
             f.create_dataset("mo_coeff", data=mo_coeff)
 
@@ -82,12 +86,17 @@ def make_casdm1s(casdm1frs: Sequence[np.ndarray]) -> np.ndarray:
         The active-space 1-RDM, shape ``(2, ncas, ncas)``.
     """
     return np.stack(
-        [linalg.block_diag(*[dm1rs[0][ispin] for dm1rs in casdm1frs]) for ispin in (0, 1)],
+        [
+            linalg.block_diag(*[dm1rs[0][ispin] for dm1rs in casdm1frs])
+            for ispin in (0, 1)
+        ],
         axis=0,
     )
 
 
-def make_casdm2(casdm1frs: Sequence[np.ndarray], casdm2fr: Sequence[np.ndarray]) -> np.ndarray:
+def make_casdm2(
+    casdm1frs: Sequence[np.ndarray], casdm2fr: Sequence[np.ndarray]
+) -> np.ndarray:
     """Build the spin-summed active-space 2-RDM of the LAS product state from root 0.
 
     Diagonal blocks are the fragment 2-RDMs; off-diagonal blocks are the Coulomb

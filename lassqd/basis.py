@@ -17,7 +17,9 @@ if TYPE_CHECKING:
     from pyscf.scf.rohf import ROHF
 
 
-def fragment_rohf(h1: np.ndarray, h2: np.ndarray, norb: int, nelec: tuple[int, int]) -> ROHF:
+def fragment_rohf(
+    h1: np.ndarray, h2: np.ndarray, norb: int, nelec: tuple[int, int]
+) -> ROHF:
     """Run ROHF on the fragment Hamiltonian ``(h1, h2)`` in an orthonormal basis.
 
     Only ``|neleca - nelecb|`` matters: the orbitals of a spin-free Hamiltonian do
@@ -45,7 +47,9 @@ def fragment_rohf(h1: np.ndarray, h2: np.ndarray, norb: int, nelec: tuple[int, i
     return mf
 
 
-def to_mo(mo_coeff: np.ndarray, h1: np.ndarray, h2: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def to_mo(
+    mo_coeff: np.ndarray, h1: np.ndarray, h2: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     """Rotate one- and two-electron integrals into the ``mo_coeff`` basis.
 
     Args:

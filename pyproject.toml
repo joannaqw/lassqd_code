@@ -38,6 +38,7 @@ dev = [
     "fulqrum>=0.4.5",
     "ipykernel>=7.3.0",
     "pytest>=9.1.1",
+    "ruff>=0.16.9",
 ]
 
 [tool.uv.sources]
