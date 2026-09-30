@@ -5,6 +5,16 @@ fragments with opposite spin polarization, `((4,2),(2,4))`, and run hybrid LASSQ
 with LUCJ circuits (`lassqd.run_lassqd`). Run each script from its own directory;
 `run.slurm` shows the cluster setup.
 
+Each script defines its own `prepare_fragment(h1, h2, norb, nelec)` and passes it
+as the required `circuit_builder` argument. These examples initialize one LUCJ layer
+by compressed factorization of CCSD amplitudes, with nearest-neighbor same-spin
+interactions and opposite-spin pairs `(p, p)` for `p = 0, 4, ...`. Edit the
+interaction pairs, `n_reps`, and compression settings in the script for your
+calculation. The library imposes no ansatz or connectivity. The builder must
+prepare occupations in the fragment ROHF basis used by `FragmentSQD`, with
+alpha orbitals on the first `norb` qubits and beta on the next `norb`, and return
+the circuit without measurements.
+
 ## `fefe_lassqd/`
 
 `lassqd_fefe.py`: (6e,10o) per fragment (20 qubits each), circuits sampled classically

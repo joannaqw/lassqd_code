@@ -9,9 +9,15 @@ from qiskit import ClassicalRegister, QuantumCircuit
 from qiskit.primitives import BaseSamplerV2
 from qiskit.transpiler import PassManager
 
-from lassqd.circuits import CircuitFn, lucj_circuit
 from lassqd.las import LASSCFNoSymm, fragment_hamiltonians, set_fragment_kernels
 from lassqd.sqd import FragmentSQD
+
+
+# ``circuit_builder(h1, h2, norb, nelec) -> circuit``.
+# See run_lassqd for the basis contract.
+CircuitBuilder = Callable[
+    [np.ndarray, np.ndarray, int, tuple[int, int]], QuantumCircuit
+]
 
 
 @dataclass
@@ -45,10 +51,10 @@ def run_lassqd(
     solvers: Sequence[FragmentSQD],
     sampler: BaseSamplerV2,
     *,
+    circuit_builder: CircuitBuilder,
     pass_manager: PassManager | None = None,
     glue_circuits: bool = True,
     shots: int | None = None,
-    circuit_fn: CircuitFn = lucj_circuit,
     max_cycles: int = 50,
     conv_tol: float = 1e-5,
     callback: Callable[[int, LASSCFNoSymm], None] | None = None,
@@ -57,7 +63,7 @@ def run_lassqd(
 
     Each cycle, at fixed orbitals:
 
-    1. quantum: build ``circuit_fn(h1, h2, norb, nelec)`` for every fragment
+    1. quantum: build ``circuit_builder(h1, h2, norb, nelec)`` for every fragment
        Hamiltonian, optionally glue them into one circuit, transpile with
        ``pass_manager`` and sample them in one job with ``sampler``;
     2. classical: give each fragment's counts to its solver (e.g.
@@ -73,12 +79,21 @@ def run_lassqd(
         mo_coeff: Initial molecular orbital coefficients.
         solvers: One solver per fragment, in fragment order.
         sampler: SamplerV2 primitive used to sample the circuits.
+        circuit_builder: Required callable ``(h1, h2, norb, nelec) -> QuantumCircuit``.
+            Receives the fragment integrals in the LAS basis: ``h1`` has shape
+            ``(norb, norb)`` and ``h2`` has shape ``(norb,) * 4`` in chemists'
+            notation. ``nelec`` is ``(neleca, nelecb)``; orbital and electron
+            counts may be NumPy integers. Return an unmeasured ``2 * norb``-qubit
+            state-preparation circuit whose occupations refer to the fragment
+            ROHF basis from :func:`lassqd.basis.fragment_mo_basis`, matching
+            :class:`lassqd.sqd.FragmentSQD`. Alpha orbitals occupy qubits
+            ``0..norb-1`` and beta orbitals ``norb..2*norb-1``. The caller chooses
+            the ansatz, interaction pairs and initialization settings.
         pass_manager: Optional pass manager applied before sampling.
         glue_circuits: Glue the fragments into one circuit with one classical
             register per fragment (default). False submits each fragment as a
             separate measured circuit in the same sampler job.
         shots: Shots per fragment per cycle; None uses the sampler's default.
-        circuit_fn: Builds the state-preparation circuit for one fragment.
         max_cycles: Maximum number of hybrid cycles.
         conv_tol: Energy convergence threshold between consecutive cycles.
         callback: Called as ``callback(cycle, las)`` after every cycle, e.g. to
@@ -95,7 +110,7 @@ def run_lassqd(
     try:
         for cycle in range(max_cycles):
             circuits = [
-                circuit_fn(h1s[0], h2, norb, nelec)
+                circuit_builder(h1s[0], h2, norb, nelec)
                 for (h0, h1s, h2), norb, nelec in zip(
                     fragment_hamiltonians(las, mo_coeff), las.ncas_sub, las.nelecas_sub
                 )

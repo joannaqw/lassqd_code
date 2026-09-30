@@ -7,10 +7,42 @@ working directory; they are not tracked in the repository.
 
 import ffsim
 import numpy as np
-from pyscf import fci, gto, lib, scf
+from pyscf import cc, fci, gto, lib, scf
+from qiskit import QuantumCircuit
 from qiskit_addon_sqd.fermion import SCIResult, SCIState
 
 from lassqd import FragmentSQD, LASSCFNoSymm, run_lassqd
+from lassqd.basis import fragment_mo_basis, fragment_rohf
+
+
+def prepare_fragment(h1, h2, norb, nelec):
+    """Prepare this example's CCSD-initialized LUCJ state in the SQD ROHF basis."""
+    norb = int(norb)
+    nelec = tuple(int(n) for n in nelec)
+    _, h1_mo, h2_mo = fragment_mo_basis(h1, h2, norb, nelec)
+    mf_mo = fragment_rohf(h1_mo, h2_mo, norb, nelec)
+    ccsd = cc.CCSD(mf_mo)
+    ccsd.verbose = 0
+    ccsd.kernel()
+
+    # Ansatz choices for this calculation; change these to explore other circuits.
+    interaction_pairs = (
+        [(p, p + 1) for p in range(norb - 1)],  # alpha-alpha
+        [(p, p) for p in range(0, norb, 4)],  # alpha-beta
+        [(p, p + 1) for p in range(norb - 1)],  # beta-beta
+    )
+    ucj_op = ffsim.UCJOpSpinUnbalanced.from_t_amplitudes(
+        ccsd.t2,
+        t1=ccsd.t1,
+        n_reps=1,
+        interaction_pairs=interaction_pairs,
+        optimize=True,
+    )
+    circuit = QuantumCircuit(2 * norb)
+    # Alpha orbitals precede beta orbitals, as required by FragmentSQD.
+    circuit.append(ffsim.qiskit.PrepareHartreeFockJW(norb, nelec), circuit.qubits)
+    circuit.append(ffsim.qiskit.UCJOpSpinUnbalancedJW(ucj_op), circuit.qubits)
+    return circuit
 
 
 def solve_sci_batch(
@@ -106,6 +138,7 @@ result = run_lassqd(
     mo_localized,
     solvers,
     ffsim.qiskit.FfsimSampler(),
+    circuit_builder=prepare_fragment,
     glue_circuits=False,
     shots=100_000,
     max_cycles=50,

@@ -24,10 +24,13 @@ circuits, all fragment circuits are sampled in one job, and then SQD on
 each fragment's counts is the fragment solver for one LASSCF orbital step.
 
 - `lassqd.las`: `LASSCFNoSymm`, `fragment_hamiltonians`, `set_fragment_kernels` (mrh interface)
-- `lassqd.circuits`: `lucj_circuit` (LUCJ initialized by compressed factorization of CCSD amplitudes)
 - `lassqd.sqd`: `FragmentSQD`, the SQD fragment kernel (configuration recovery, optional determinant carryover between cycles)
 - `lassqd.hybrid`: `run_lassqd`, the hybrid loop; it samples with any qiskit SamplerV2 primitive (ffsim, Aer, IBM Runtime, ...)
 - `lassqd.pdft`: `lassqd_pdft_energy` (LAS-PDFT on the SQD RDMs), `save_rdms`, `load_rdms`
+
+`run_lassqd` requires a `circuit_builder(h1, h2, norb, nelec)` callable. Define
+`prepare_fragment` as in the [tutorial](docs/lassqd.ipynb) or the
+[FeFe example](examples/fefe_lassqd/lassqd_fefe.py), then pass it explicitly:
 
 ```python
 from functools import partial
@@ -49,10 +52,28 @@ solvers = [
 ]
 sampler = ffsim.qiskit.FfsimSampler()
 result = run_lassqd(
-    las, mo_coeff, solvers, sampler, glue_circuits=False, shots=100_000
+    las,
+    mo_coeff,
+    solvers,
+    sampler,
+    circuit_builder=prepare_fragment,
+    glue_circuits=False,
+    shots=100_000,
 )
 e_pdft = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_coeff)
 ```
+
+The builder receives integrals in the LAS basis (`h2` in chemists' notation).
+It must return an unmeasured circuit with `2 * norb` qubits whose occupations
+refer to the fragment ROHF basis returned by `lassqd.basis.fragment_mo_basis`,
+which is also used by `FragmentSQD`. Alpha orbitals occupy qubits `0..norb-1`
+and beta orbitals `norb..2*norb-1`. Orbital and electron counts may be NumPy
+integers; convert them to Python integers for Qiskit.
+
+There is no default ansatz. The example builders choose CCSD-initialized LUCJ
+and specify their interaction pairs, layer count, and compression settings
+locally. Code using the former `lassqd.lucj_circuit` default must now supply
+its own builder through `circuit_builder`.
 
 For classical LUCJ sampling, use `FfsimSampler` with `glue_circuits=False` and
 no pass manager. Each fragment is a separate measured circuit in the same job,

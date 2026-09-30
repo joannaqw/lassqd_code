@@ -29,7 +29,7 @@ def run(mf, las, mo, **kwargs):
         mo,
         solvers,
         FullSpaceSampler(las),
-        circuit_fn=empty_circuit,
+        circuit_builder=empty_circuit,
         conv_tol=1e-10,
         max_cycles=100,
         **kwargs,
@@ -104,7 +104,7 @@ def test_lucj_sampling_in_hybrid_loop(h6, sampler_type, glue_circuits, shots):
 
     counts_per_cycle = []
 
-    def circuit_fn(h1, h2, norb, nelec):
+    def circuit_builder(h1, h2, norb, nelec):
         # Exercise native LUCJ gates without repeating the variational optimization.
         norb = int(norb)
         nelec = tuple(int(n) for n in nelec)
@@ -135,7 +135,7 @@ def test_lucj_sampling_in_hybrid_loop(h6, sampler_type, glue_circuits, shots):
             pass_manager=pass_manager,
             glue_circuits=glue_circuits,
             shots=shots,
-            circuit_fn=circuit_fn,
+            circuit_builder=circuit_builder,
             max_cycles=2,
             conv_tol=0.0,
             callback=record_counts,

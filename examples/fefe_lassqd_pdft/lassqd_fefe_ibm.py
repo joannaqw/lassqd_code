@@ -11,8 +11,9 @@ from pathlib import Path
 
 import ffsim
 import numpy as np
-from pyscf import gto, lib, scf
+from pyscf import cc, gto, lib, scf
 from pyscf.mcscf import avas
+from qiskit import QuantumCircuit
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_addon_sqd.fermion import solve_sci_batch
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2, Session
@@ -24,6 +25,38 @@ from lassqd import (
     run_lassqd,
     save_rdms,
 )
+from lassqd.basis import fragment_mo_basis, fragment_rohf
+
+
+def prepare_fragment(h1, h2, norb, nelec):
+    """Prepare this example's CCSD-initialized LUCJ state in the SQD ROHF basis."""
+    norb = int(norb)
+    nelec = tuple(int(n) for n in nelec)
+    _, h1_mo, h2_mo = fragment_mo_basis(h1, h2, norb, nelec)
+    mf_mo = fragment_rohf(h1_mo, h2_mo, norb, nelec)
+    ccsd = cc.CCSD(mf_mo)
+    ccsd.verbose = 0
+    ccsd.kernel()
+
+    # Ansatz choices for this calculation; change these to explore other circuits.
+    interaction_pairs = (
+        [(p, p + 1) for p in range(norb - 1)],  # alpha-alpha
+        [(p, p) for p in range(0, norb, 4)],  # alpha-beta
+        [(p, p + 1) for p in range(norb - 1)],  # beta-beta
+    )
+    ucj_op = ffsim.UCJOpSpinUnbalanced.from_t_amplitudes(
+        ccsd.t2,
+        t1=ccsd.t1,
+        n_reps=1,
+        interaction_pairs=interaction_pairs,
+        optimize=True,
+    )
+    circuit = QuantumCircuit(2 * norb)
+    # Alpha orbitals precede beta orbitals, as required by FragmentSQD.
+    circuit.append(ffsim.qiskit.PrepareHartreeFockJW(norb, nelec), circuit.qubits)
+    circuit.append(ffsim.qiskit.UCJOpSpinUnbalancedJW(ucj_op), circuit.qubits)
+    return circuit
+
 
 lib.logger.TIMER_LEVEL = lib.logger.INFO
 basis = {"Fe": "6-31g", "C": "6-31g", "H": "6-31g", "O": "6-31g", "N": "6-31g"}
@@ -80,6 +113,7 @@ with Session(backend=backend) as session:
         mo_init,
         solvers,
         sampler,
+        circuit_builder=prepare_fragment,
         pass_manager=pass_manager,
         shots=30000,
         max_cycles=1,
