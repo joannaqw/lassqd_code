@@ -7,7 +7,6 @@ import numpy as np
 from qiskit.primitives import BitArray
 from qiskit_addon_sqd.fermion import (
     SCIState,
-    bitstring_matrix_to_ci_strs,
     diagonalize_fermionic_hamiltonian,
 )
 
@@ -18,11 +17,6 @@ _DEFAULT_CARRYOVER_THRESHOLD = (
     .parameters["carryover_threshold"]
     .default
 )
-
-
-def _strings_to_bitstrings(strings: np.ndarray, norb: int) -> np.ndarray:
-    """Integer determinant strings -> boolean rows, most significant orbital first."""
-    return ((strings[:, None] >> np.arange(norb)[::-1]) & 1).astype(bool)
 
 
 def permute_carryover(
@@ -43,11 +37,12 @@ def permute_carryover(
         Unique ``(strings_a, strings_b)`` in the new basis.
     """
     rho = np.argmax(np.abs(overlap), axis=1)
-    # Bitstring columns run from orbital norb-1 down to 0; flip to index by orbital.
-    alpha = _strings_to_bitstrings(strings_a, norb)[:, ::-1][:, rho][:, ::-1]
-    beta = _strings_to_bitstrings(strings_b, norb)[:, ::-1][:, rho][:, ::-1]
-    # bitstring_matrix_to_ci_strs returns (right half, left half) == (alpha, beta)
-    return bitstring_matrix_to_ci_strs(np.hstack([beta, alpha]), open_shell=True)
+    # Bit p of a new string is bit rho[p] of the old string.
+    weights = 1 << np.arange(norb)
+    return tuple(
+        np.unique(((strings[:, None] >> rho) & 1) @ weights)
+        for strings in (strings_a, strings_b)
+    )
 
 
 class FragmentSQD:
