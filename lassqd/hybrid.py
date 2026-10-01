@@ -172,14 +172,12 @@ def _glue_circuits(circuits: Sequence[QuantumCircuit]) -> QuantumCircuit:
         measured into ``cregs[i]``.
     """
     widths = [qc.num_qubits for qc in circuits]
-    glued = QuantumCircuit(sum(widths))
     cregs = [ClassicalRegister(n) for n in widths]
-    for creg in cregs:
-        glued.add_register(creg)
+    glued = QuantumCircuit(QuantumRegister(sum(widths)), *cregs)
     start = 0
     for qc, creg, n in zip(circuits, cregs, widths):
-        glued.append(qc, range(start, start + n))
-        for i in range(n):
-            glued.measure(start + i, creg[i])
+        qubits = range(start, start + n)
+        glued.append(qc, qubits)
+        glued.measure(qubits, creg)
         start += n
     return glued
