@@ -230,11 +230,11 @@ determinant carryover is handled by the addon within a call and by `FragmentSQD`
 between calls. Circuit construction and SQD use only the alpha one-electron
 Hamiltonian `h1s[0]`, including when the embedding is spin-dependent.
 
-`FragmentSQD(samples_per_batch, *, output_dir=None, verbose=logger.INFO, **sqd_options)`
+`FragmentSQD(samples_per_batch, **sqd_options)`
 passes SQD options to `diagonalize_fermionic_hamiltonian` using the addon's names
-and defaults. Only `samples_per_batch` is required; `output_dir` and `verbose`
-configure the wrapper. The Hamiltonian, orbital and electron counts come from the
-fragment kernel arguments; the sampled `BitArray` is built from `solver.counts`.
+and defaults. Only `samples_per_batch` is required. The Hamiltonian, orbital and
+electron counts come from the fragment kernel arguments; the sampled `BitArray`
+is built from `solver.counts`.
 
 The defaults in the locked qiskit-addon-sqd version are:
 
@@ -264,12 +264,12 @@ solver = FragmentSQD(
 )
 ```
 
-Both convergence criteria must be satisfied to stop early. Histories contain only
-completed iterations. Options are stored in `solver.sqd_options` and can be
-updated between calls, for example `solver.sqd_options["max_dim"] = 200`. The
+Both convergence criteria must be satisfied to stop early. Options are stored in
+`solver.sqd_options` and can be updated between calls, for example
+`solver.sqd_options["max_dim"] = 200`. The
 `seed` option becomes a persistent NumPy generator on use, so repeated calls
-advance the same random stream. A custom `callback(results)` runs after internal
-history recording and receives the addon's list of `SCIResult` objects, with energies
+advance the same random stream. A custom `callback(results)` is passed directly
+to the addon and receives each iteration's list of `SCIResult` objects, with energies
 excluding `h0` and states in the fragment ROHF basis. A custom `sci_solver` accepts
 `(ci_strings, h1, h2, norb, nelec)` and returns that list; it controls its own spin
 constraint and Davidson settings. Explicit configurations are merged with
@@ -289,6 +289,65 @@ control convergence of configuration recovery.
 
 The [tutorial](docs/lassqd.ipynb) demonstrates a custom `sci_solver` built with
 Fulqrum and SciPy's `eigsh`, without a total-spin penalty.
+
+#### Recording and saving SQD results
+
+`FragmentSQD` keeps the final `e_tot`, `dm1s`, `dm2`, `sci_state`, and carryover
+strings. Use a callback to record iteration summaries or log progress:
+
+```python
+import numpy as np
+
+history = []
+
+
+def record_iteration(results):
+    best = min(results, key=lambda result: result.energy)
+    history.append(
+        {
+            "energy": [r.energy for r in results],
+            "spin_square": [r.sci_state.spin_square() for r in results],
+            "dimension": [r.sci_state.amplitudes.size for r in results],
+            "alpha_count": [len(r.sci_state.ci_strs_a) for r in results],
+            "beta_count": [len(r.sci_state.ci_strs_b) for r in results],
+            "occupancies": np.concatenate(best.orbital_occupancies),
+        }
+    )
+    print(f"SQD round {len(history)}: lowest energy = {best.energy:.12g}")
+
+
+solver = FragmentSQD(50, callback=record_iteration)
+```
+
+The caller owns `history`: clear it before a new solve to record that solve alone.
+These summaries do not retain all the batch wave functions. Callback energies
+exclude `h0`; callback states and occupancies use the current fragment ROHF basis.
+The solver's final attributes are updated **after** the solve returns, so save them
+after `solver(...)` or in `run_lassqd`'s cycle callback:
+
+```python
+from pathlib import Path
+
+directory = Path("fragment_results")
+directory.mkdir(parents=True, exist_ok=True)
+solver.sci_state.save(directory / "sci_vec")
+for name in history[0]:
+    np.save(directory / name, np.asarray([row[name] for row in history]))
+if solver.carryover_strings is not None:
+    np.save(directory / "alpha_strings", solver.carryover_strings[0])
+    np.save(directory / "beta_strings", solver.carryover_strings[1])
+```
+
+For a complete cycle callback preserving the FeFe example's checkpoint filenames,
+see [lassqd_fefe.py](examples/fefe_lassqd/lassqd_fefe.py). It saves after each hybrid
+cycle completes and clears the per-fragment histories. The SQD state remains in
+its fragment ROHF basis; LAS orbitals saved after the cycle include the orbital update.
+
+Migration: remove `output_dir` and `verbose` from `FragmentSQD` construction and
+replace reads of `solver.e_hist`, `d_hist`, `a_hist`, `b_hist`, `s_hist`, and
+`occupancy_hist` with callback-owned summaries. Saving and diagnostic logging are
+now caller responsibilities. `HybridResult.e_hist` still records molecular total
+energies after each hybrid cycle.
 
 ### LAS-PDFT and saved wave functions
 

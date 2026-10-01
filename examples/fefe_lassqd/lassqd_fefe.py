@@ -5,6 +5,10 @@ Needs ``fefe_as.npy`` and ``as_increase_avas.npy`` (initial orbitals) in the
 working directory; they are not tracked in the repository.
 """
 
+from collections.abc import Sequence
+from functools import partial
+from pathlib import Path
+
 import ffsim
 import numpy as np
 from pyscf import cc, fci, gto, lib, scf
@@ -104,6 +108,51 @@ def solve_sci_batch(
     return results
 
 
+def record_iteration(history: dict[str, list], results: list[SCIResult]) -> None:
+    """Keep small summaries of each batch, without retaining its wave function."""
+    best = min(results, key=lambda result: result.energy)
+    rows = {
+        "e_hist": [r.energy for r in results],
+        "s_hist": [r.sci_state.spin_square() for r in results],
+        "d_hist": [r.sci_state.amplitudes.size for r in results],
+        "a_hist": [len(r.sci_state.ci_strs_a) for r in results],
+        "b_hist": [len(r.sci_state.ci_strs_b) for r in results],
+        "occupancy_hist": np.concatenate(best.orbital_occupancies),
+    }
+    for name, row in rows.items():
+        history.setdefault(name, []).append(row)
+
+
+def save_cycle(
+    cycle: int,
+    las: LASSCFNoSymm,
+    *,
+    solvers: Sequence[FragmentSQD],
+    histories: Sequence[dict[str, list]],
+    output_dir: str | Path = ".",
+) -> None:
+    """Overwrite checkpoints with this cycle's data, then clear history buffers.
+
+    Called by ``run_lassqd`` after the fragment solves and orbital update. Fragment
+    states retain their SQD ROHF basis; ``current_orb`` holds the updated LAS basis.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    np.save(output_dir / "current_orb", las.mo_coeff)
+    for ifrag, (solver, history) in enumerate(zip(solvers, histories)):
+        directory = output_dir / f"data_carryover_frag{ifrag}"
+        directory.mkdir(exist_ok=True)
+        solver.sci_state.save(directory / "sci_vec")
+        for name, rows in history.items():
+            np.save(directory / name, np.asarray(rows))
+        if solver.carryover_strings is not None:
+            alpha, beta = solver.carryover_strings
+            np.save(directory / "alpha_strings", alpha)
+            np.save(directory / "beta_strings", beta)
+    for history in histories:
+        history.clear()
+
+
 lib.logger.TIMER_LEVEL = lib.logger.INFO
 basis = {"Fe": "6-31g", "C": "6-31g", "H": "6-31g", "O": "6-31g", "N": "6-31g"}
 mol = gto.M(atom="fefe.xyz", verbose=4, spin=0, charge=4, basis=basis)
@@ -118,6 +167,7 @@ las = LASSCFNoSymm(mf, (10, 10), ((4, 2), (2, 4)), spin_sub=(3, 3))
 guess_mo_sorted = las.sort_mo(list(range(100, 120)), guess_mo_coeff)
 mo_localized = las.localize_init_guess(([0], [1]), guess_mo_sorted)
 
+histories = [{} for _ in range(las.nfrags)]
 solvers = [
     FragmentSQD(
         max_iterations=6,
@@ -125,14 +175,10 @@ solvers = [
         samples_per_batch=170,
         sci_solver=solve_sci_batch,
         carryover_threshold=1e-3,
-        output_dir=f"data_carryover_frag{ifrag}",
+        callback=partial(record_iteration, histories[ifrag]),
     )
     for ifrag in range(las.nfrags)
 ]
-
-
-def save_orbitals(cycle: int, las: LASSCFNoSymm) -> None:
-    np.save("current_orb", las.mo_coeff)
 
 
 result = run_lassqd(
@@ -145,7 +191,7 @@ result = run_lassqd(
     shots=100_000,
     max_cycles=50,
     conv_tol=1e-5,
-    callback=save_orbitals,
+    callback=partial(save_cycle, solvers=solvers, histories=histories),
 )
 print(
     f"LASSQD energy {result.e_tot:.10f} ({'' if result.converged else 'not '}converged)"
