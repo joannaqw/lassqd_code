@@ -84,7 +84,7 @@ def from_mo(
         ``(dm1s, dm2)`` in the original basis, with the same shapes.
     """
     C = mo_coeff
-    dm1s = np.stack([C @ dm @ C.T for dm in dm1s], axis=0)
+    dm1s = C @ dm1s @ C.T
     dm2 = np.einsum("ip,jr,prqs,kq,ls->ijkl", C, C, dm2, C, C, optimize=True)
     return dm1s, dm2
 
