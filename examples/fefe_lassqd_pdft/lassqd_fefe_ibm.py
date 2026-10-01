@@ -121,7 +121,7 @@ with Session(backend=backend) as session:
         max_cycles=1,
         callback=save_wave_function,
     )
-e_pdft = lassqd_pdft_energy(
+e_pdft, _, _ = lassqd_pdft_energy(
     las, result.casdm1frs, result.casdm2fr, result.mo_coeff, ot="tPBE"
 )
 print("SQDPDFT energy", e_pdft)

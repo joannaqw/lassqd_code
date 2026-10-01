@@ -18,6 +18,5 @@ casdm1frs, casdm2fr, mo_coeff = load_rdms("RDMS/casdm.h5")
 if mo_coeff is None:
     # Files written before the orbitals were stored alongside the RDMs.
     mo_coeff = np.load("current_orb.npy")
-print(
-    "SQDPDFT energy", lassqd_pdft_energy(las, casdm1frs, casdm2fr, mo_coeff, ot="tPBE")
-)
+e_pdft, _, _ = lassqd_pdft_energy(las, casdm1frs, casdm2fr, mo_coeff, ot="tPBE")
+print("SQDPDFT energy", e_pdft)

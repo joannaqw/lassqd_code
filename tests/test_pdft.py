@@ -27,8 +27,13 @@ def test_pdft_energy_matches_las_pdft(ci_las):
     from mrh.my_pyscf.mcpdft.laspdft import get_mcpdft_child_class
 
     las, casdm1frs, casdm2fr = ci_las
-    ref = get_mcpdft_child_class(las, ot="tPBE").compute_pdft_energy_()[0]
-    assert np.isclose(lassqd_pdft_energy(las, casdm1frs, casdm2fr, las.mo_coeff), ref)
+    e_tot_ref, e_ot_ref, e_states_ref = get_mcpdft_child_class(
+        las, ot="tPBE"
+    ).compute_pdft_energy_()
+    e_tot, e_ot, e_states = lassqd_pdft_energy(las, casdm1frs, casdm2fr, las.mo_coeff)
+    assert np.isclose(e_tot, e_tot_ref)
+    assert np.isclose(e_ot, e_ot_ref)
+    assert np.allclose(e_states, e_states_ref)
 
 
 def test_save_load_round_trip(tmp_path, ci_las):

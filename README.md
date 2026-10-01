@@ -181,7 +181,7 @@ result = run_lassqd(
     glue_circuits=False,
     shots=100_000,
 )
-e_pdft = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_coeff)
+e_pdft, e_ot, e_states = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_coeff)
 ```
 
 `max_cycles=50` and `conv_tol=1e-5` are the hybrid loop defaults. Check
@@ -354,7 +354,8 @@ energies after each hybrid cycle.
 `result.mo_coeff`, `result.casdm1frs`, and `result.casdm2fr` describe one consistent
 LAS wave function: the RDMs use the active space of the returned orbitals. Pass
 them together to `lassqd_pdft_energy`, which uses the `tPBE` on-top functional by
-default.
+default and returns `(e_tot, e_ot, e_states)`: the total energy, its on-top
+component, and the per-state energies.
 
 To save that wave function, pass `mo_coeff=result.mo_coeff` to `save_rdms` along
 with the fragment RDMs. `load_rdms` returns `(casdm1frs, casdm2fr, mo_coeff)`;

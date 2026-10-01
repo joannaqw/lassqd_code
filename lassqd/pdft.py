@@ -138,8 +138,8 @@ def lassqd_pdft_energy(
     casdm2fr: Sequence[np.ndarray],
     mo_coeff: np.ndarray,
     ot: str = "tPBE",
-) -> float:
-    """Compute the MC-PDFT total energy of a LAS wave function.
+) -> tuple[float, float, list[float]]:
+    """Compute the MC-PDFT energy of a LAS wave function.
 
     The wave function is ``(mo_coeff, casdm1frs, casdm2fr)``. This uses mrh's
     LAS-PDFT with the RDMs supplied directly instead of built from CI vectors.
@@ -152,7 +152,9 @@ def lassqd_pdft_energy(
         ot: On-top functional, e.g. ``"tPBE"``.
 
     Returns:
-        The MC-PDFT total energy.
+        ``(e_tot, e_ot, e_states)``: the MC-PDFT total energy, its on-top
+        exchange-correlation component, and the per-state MC-PDFT energies, as
+        returned by mrh's ``compute_pdft_energy_``.
     """
     from mrh.my_pyscf.mcpdft.laspdft import get_mcpdft_child_class
 
@@ -162,4 +164,4 @@ def lassqd_pdft_energy(
     pdft.make_one_casdm1s = lambda ci=None, state=0, **kwargs: casdm1s
     pdft.make_one_casdm2 = lambda ci=None, state=0, **kwargs: casdm2
     e_tot, e_ot, e_states = pdft.compute_pdft_energy_(mo_coeff)
-    return e_tot
+    return e_tot, e_ot, e_states
