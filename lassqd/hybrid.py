@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from pyscf.lib import logger
-from qiskit import ClassicalRegister, QuantumCircuit
+from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
 from qiskit.primitives import BaseSamplerV2
 from qiskit.transpiler import PassManager
 
