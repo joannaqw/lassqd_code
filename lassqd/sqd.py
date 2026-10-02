@@ -10,7 +10,7 @@ from qiskit_addon_sqd.fermion import (
     diagonalize_fermionic_hamiltonian,
 )
 
-from lassqd.basis import fragment_mo_basis, fragment_rohf, from_mo
+from lassqd.basis import fragment_mo_basis, from_mo
 
 _DEFAULT_CARRYOVER_THRESHOLD = (
     signature(diagonalize_fermionic_hamiltonian)
@@ -65,8 +65,9 @@ class FragmentSQD:
     Carryover (enabled by default): determinants whose amplitude
     exceeds the threshold are added to every batch of the next round, and of the
     next call, after being mapped onto that call's orbitals with
-    :func:`permute_carryover`. Set ``carryover_threshold=None`` or ``np.inf`` to
-    disable carryover.
+    :func:`permute_carryover`. The orbitals are compared in the AO basis using
+    ``las_orbitals`` and ``ao_ovlp``, which :func:`lassqd.run_lassqd` sets.
+    Set ``carryover_threshold=None`` or ``np.inf`` to disable carryover.
 
     After each call, ``e_tot`` includes ``h0``, ``dm1s`` and ``dm2`` use the LAS
     basis, and ``sci_state`` uses the fragment ROHF basis. Record diagnostics with
@@ -96,6 +97,8 @@ class FragmentSQD:
         self.sqd_options = sqd_options
         self.counts: dict[str, int] | None = None
         self.carryover_strings: tuple[np.ndarray, np.ndarray] | None = None
+        self.las_orbitals: np.ndarray | None = None
+        self.ao_ovlp: np.ndarray | None = None
         self.prev_mo: np.ndarray | None = None
 
     def __call__(
@@ -143,7 +146,7 @@ class FragmentSQD:
         use_carryover = carryover_threshold != np.inf
         if use_carryover:
             options["include_configurations"] = self._include_carryover(
-                h1_mo, h2_mo, norb, nelec, options.get("include_configurations")
+                mo_coeff, norb, options.get("include_configurations")
             )
 
         best = diagonalize_fermionic_hamiltonian(
@@ -170,23 +173,25 @@ class FragmentSQD:
 
     def _include_carryover(
         self,
-        h1_mo: np.ndarray,
-        h2_mo: np.ndarray,
+        mo_coeff: np.ndarray,
         norb: int,
-        nelec: tuple[int, int],
         include: list[int]
         | np.ndarray
         | tuple[list[int] | np.ndarray, list[int] | np.ndarray]
         | None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Map previous strings to this call's orbitals and merge explicit strings."""
-        mo_ref = fragment_rohf(h1_mo, h2_mo, norb, nelec).mo_coeff
+        # Compare in the AO basis: LASSCF re-canonicalizes the LAS orbitals between
+        # calls. Without las_orbitals, the LAS basis is assumed fixed.
+        mo_ref, ovlp = mo_coeff, np.eye(norb)
+        if self.las_orbitals is not None:
+            mo_ref, ovlp = self.las_orbitals @ mo_coeff, self.ao_ovlp
         if self.carryover_strings is None:
             empty = np.array([], dtype=np.int64)
             self.carryover_strings = (empty, empty)
         else:
             self.carryover_strings = permute_carryover(
-                *self.carryover_strings, mo_ref.T @ self.prev_mo, norb
+                *self.carryover_strings, mo_ref.T @ ovlp @ self.prev_mo, norb
             )
         self.prev_mo = mo_ref
         if include is None:

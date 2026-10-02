@@ -104,6 +104,8 @@ def run_lassqd(
     log = logger.new_logger(las)
     saved = las.max_cycle_macro, las.max_cycle_rdmjk
     las.max_cycle_macro, las.max_cycle_rdmjk = 1, 0
+    ao_ovlp = las._scf.get_ovlp()
+    bounds = las.ncore + np.cumsum([0, *las.ncas_sub])
     e_hist = []
     converged = False
     try:
@@ -129,6 +131,9 @@ def run_lassqd(
             results = job.result()
             for solver, (pub_index, register) in zip(solvers, output_registers):
                 solver.counts = results[pub_index].data[register].get_counts()
+            for solver, start, stop in zip(solvers, bounds[:-1], bounds[1:]):
+                solver.las_orbitals = mo_coeff[:, start:stop]
+                solver.ao_ovlp = ao_ovlp
             set_fragment_kernels(las, solvers)
             las.kernel(mo_coeff)
             mo_coeff = las.mo_coeff

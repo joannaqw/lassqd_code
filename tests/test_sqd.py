@@ -382,6 +382,39 @@ def test_fragment_sqd_included_configurations_and_carryover(
     assert np.isclose(e, 1.0 if separate_spins else 0.0)
 
 
+@pytest.mark.parametrize(
+    "reorder_las_basis,expected_strings,expected_energy",
+    [
+        # Same LAS orbitals; LAS orbitals 0 and 1 swap energy order, so the
+        # carried ROHF orbital 1 (LAS orbital 1) becomes ROHF orbital 0.
+        (False, {1, 4}, 0.0),
+        # LAS orbitals 0 and 1 swap places, as LASSCF canonicalization can do; the
+        # Hamiltonian is the same physically, so the carried orbital is unchanged.
+        (True, {2, 4}, 2.0),
+    ],
+)
+def test_fragment_sqd_carryover_follows_orbitals_in_ao_basis(
+    reorder_las_basis, expected_strings, expected_energy
+):
+    # Non-orthonormal AO basis; the LAS orbitals are S-orthonormal.
+    ao_ovlp = np.diag([1.0, 2.0, 4.0])
+    las_orbitals = np.diag(ao_ovlp.diagonal() ** -0.5)
+    h2 = np.zeros((3,) * 4)
+    solver = FragmentSQD(1, max_iterations=1, carryover_threshold=1e-3)
+    solver.las_orbitals, solver.ao_ovlp = las_orbitals, ao_ovlp
+    solver.counts = {"010010": 10}
+    solver(3, (1, 1), 0.0, np.diag([0.0, 1.0, 2.0]), h2)
+    # Carried over: ROHF orbital 1 (energy 1) doubly occupied.
+    assert all(np.array_equal(strings, [2]) for strings in solver.carryover_strings)
+    if reorder_las_basis:
+        solver.las_orbitals = las_orbitals[:, [1, 0, 2]]
+    solver.counts = {"100100": 10}
+    e, _, _ = solver(3, (1, 1), 0.0, np.diag([1.0, 0.0, 2.0]), h2)
+    assert set(solver.sci_state.ci_strs_a) == expected_strings
+    assert set(solver.sci_state.ci_strs_b) == expected_strings
+    assert np.isclose(e, expected_energy)
+
+
 @pytest.mark.parametrize("max_dim,expected_dims", [(1, (1, 1)), ((2, 1), (2, 1))])
 def test_fragment_sqd_max_dim(max_dim, expected_dims, iterations):
     solver = FragmentSQD(

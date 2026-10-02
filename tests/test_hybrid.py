@@ -79,6 +79,25 @@ def test_result_is_a_consistent_wave_function(h6):
     assert las.max_cycle_macro != 1
 
 
+def test_solvers_get_their_fragment_orbitals(h6):
+    mf, las, mo = h6
+    solvers = [FragmentSQD(100, max_iterations=1, seed=0) for _ in range(las.nfrags)]
+    run_lassqd(
+        las,
+        mo,
+        solvers,
+        FullSpaceSampler(las),
+        circuit_builder=empty_circuit,
+        max_cycles=1,
+    )
+    # One cycle: the fragments were solved at the input orbitals.
+    start = las.ncore
+    for solver, norb in zip(solvers, las.ncas_sub):
+        assert np.array_equal(solver.las_orbitals, mo[:, start : start + norb])
+        assert np.allclose(solver.ao_ovlp, mf.get_ovlp())
+        start += norb
+
+
 @pytest.mark.parametrize(
     "sampler_type,glue_circuits,shots",
     [
