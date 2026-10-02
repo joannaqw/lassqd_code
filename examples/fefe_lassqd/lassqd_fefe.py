@@ -1,8 +1,6 @@
 """Hybrid LASSQD for the FeFe complex, (6e,10o) per Fe, with LUCJ circuits sampled
 classically with ffsim and determinant carryover between cycles.
 
-Needs ``fefe_as.npy`` and ``as_increase_avas.npy`` (initial orbitals) in the
-working directory; they are not tracked in the repository.
 """
 
 from collections.abc import Sequence
@@ -12,6 +10,7 @@ from pathlib import Path
 import ffsim
 import numpy as np
 from pyscf import cc, fci, gto, lib, scf
+from pyscf.mcscf import avas
 from qiskit import QuantumCircuit
 from qiskit_addon_sqd.fermion import SCIResult, SCIState
 
@@ -64,10 +63,9 @@ def solve_sci_batch(
 ) -> list[SCIResult]:
     """Solve several Davidson roots per batch and return only the first root.
 
-    This preserves the FeFe example's solver settings. The spin penalty targets
+    The spin penalty targets
     ``S(S + 1)`` with ``S = abs(neleca - nelecb) / 2``. The addon's RDM processing
     assumes one eigenvector, so multiple roots are handled directly with PySCF.
-    Energies are recomputed without the spin penalty or constant energy term.
     """
     spin = abs(nelec[0] - nelec[1]) / 2
     results = []
@@ -159,9 +157,8 @@ mol = gto.M(atom="fefe.xyz", verbose=4, spin=0, charge=4, basis=basis)
 mf = scf.ROHF(mol)
 mf.init_guess = "atom"
 mf = mf.density_fit()
-mf.mo_coeff = np.load("fefe_as.npy")
 mf.kernel()
-guess_mo_coeff = np.load("as_increase_avas.npy")
+ncas, nelecas, guess_mo_coeff = avas.kernel(mf, ["Fe 3d"], minao=mol.basis)
 
 las = LASSCFNoSymm(mf, (10, 10), ((4, 2), (2, 4)), spin_sub=(3, 3))
 guess_mo_sorted = las.sort_mo(list(range(100, 120)), guess_mo_coeff)
