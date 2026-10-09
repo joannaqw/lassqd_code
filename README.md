@@ -142,7 +142,7 @@ step before the next cycle.
 | [lassqd.las](lassqd/las.py) | `LASSCFNoSymm`, `fragment_hamiltonians`, and `set_fragment_kernels`: the mrh interface |
 | [lassqd.basis](lassqd/basis.py) | `fragment_mo_basis` and `fragment_rohf`: fragment orbital preparation |
 | [lassqd.sqd](lassqd/sqd.py) | `FragmentSQD`: configuration recovery and determinant carryover |
-| [lassqd.hybrid](lassqd/hybrid.py) | `run_lassqd` and `HybridResult`: the hybrid loop and its result |
+| [lassqd.hybrid](lassqd/hybrid.py) | `run_lassqd` and `HybridResult`: the hybrid loop and its result; `build_circuits`, `submit_circuits`, `collect_samples` and `solve_cycle`: its stages |
 | [lassqd.pdft](lassqd/pdft.py) | `lassqd_pdft_energy`, `save_rdms`, and `load_rdms`: LAS-PDFT and wave-function storage |
 
 ### Usage
@@ -219,6 +219,56 @@ ffsim gates. Create it with `generate_preset_pass_manager(...)`, then set
 `pass_manager.pre_init = ffsim.qiskit.PRE_INIT`.
 `shots` is the number of samples per fragment per cycle in either mode;
 `shots=None` uses the sampler's default.
+
+### Running the stages separately
+
+`run_lassqd` composes three stages, which can also be called directly, for example
+to save a cycle's samples, re-solve them with different SQD settings, or resume
+after a classical failure without submitting another quantum job:
+
+```python
+import copy
+import pickle
+
+from lassqd import build_circuits, collect_samples, solve_cycle, submit_circuits
+
+step = None  # no previous cycle: start from mrh's initial-guess RDMs
+for cycle in range(max_cycles):
+    rdms = {} if step is None else dict(casdm1frs=step.casdm1frs, casdm2fr=step.casdm2fr)
+    circuits = build_circuits(las, mo_coeff, prepare_fragment, glue_circuits=False, **rdms)
+    job = submit_circuits(sampler, circuits, shots=100_000)
+    print(job.job_id())  # keep this to recover a remote result
+    samples = collect_samples(circuits, job.result(), job_id=job.job_id())
+    with open(f"samples_{cycle}.pkl", "wb") as f:
+        pickle.dump(samples, f)
+
+    saved_solvers = copy.deepcopy(solvers)  # state before this cycle's solve
+    step = solve_cycle(las, samples, solvers)  # SQD and one orbital step
+    mo_coeff = step.mo_coeff
+```
+
+- `build_circuits` collects the fragment Hamiltonians at `mo_coeff` and builds,
+  measures and compiles the circuits (`pass_manager`, `glue_circuits`). Pass the
+  previous cycle's RDMs, as above: they set each fragment's embedding in the
+  others, and `run_lassqd` continues from them in every cycle, as classical LASSCF
+  does. Restarting each cycle from mrh's initial guess instead converges to a
+  slightly different energy.
+- `submit_circuits` submits them in one sampler job. `collect_samples` accepts
+  any result of that job, including one recovered later from a remote service
+  by its job ID.
+- `solve_cycle` solves the fragments at `samples.mo_coeff`, starting from the RDMs
+  the circuits were built from, and takes one LASSCF orbital step; mrh does both
+  inside one `las.kernel` call. It returns a `CycleResult` with the energy,
+  updated orbitals and matching fragment RDMs.
+
+The fragment Hamiltonians depend only on the LAS setup and the orbitals and RDMs
+stored in the samples, so saved samples can be solved later with a new LAS object
+built the same way. To restart `run_lassqd` from a saved wave function, pass its
+orbitals as `mo_coeff` and its RDMs as `casdm1frs` and `casdm2fr`, for example
+from `load_rdms`.
+`solve_cycle` updates the solvers' state, such as carryover and the random stream,
+so pass `copy.deepcopy` of the solvers to re-solve the same samples from the same
+starting point. `HybridResult.job_ids` lists the job of every `run_lassqd` cycle.
 
 ### Fragment SQD
 
