@@ -27,8 +27,8 @@ Its `solve_sci_batch` function solves 10 Davidson roots per batch and retains th
 first, with the fragment's minimum-spin constraint, 200 maximum cycles and `1e-16`
 tolerance. It is passed to `FragmentSQD` through the `sci_solver` option.
 
-- Inputs: `fefe_as.npy` and `as_increase_avas.npy` (initial orbitals). **These are
-  not in the repository**; copy them into this directory first.
+- Inputs: only `fefe.xyz`. The script runs ROHF and an Fe 3d AVAS guess to build
+  the initial orbitals.
 - Outputs: `current_orb.npy` and per-fragment SQD states, histories, and carryover
   strings in `data_carryover_frag{0,1}/`, overwritten after each completed hybrid
   cycle. The callbacks in [lassqd_fefe.py](fefe_lassqd/lassqd_fefe.py) collect batch
