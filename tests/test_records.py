@@ -226,7 +226,9 @@ def test_fragment_result_round_trip(tmp_path, embedding):
 
     fragment = embedding.fragments[0]
     result = FragmentSQD(50, max_iterations=1, seed=0).solve(
-        fragment, full_counts(fragment.norb, fragment.nelec)
+        fragment,
+        full_counts(fragment.norb, fragment.nelec),
+        ao_ovlp=embedding.ao_ovlp,
     )
     result.save(tmp_path / "result.h5")
     loaded = FragmentResult.load(tmp_path / "result.h5")

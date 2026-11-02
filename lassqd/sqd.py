@@ -36,6 +36,9 @@ _DEFAULT_CARRYOVER_THRESHOLD = (
     .default
 )
 
+# Largest deviation of ``C.T @ C`` from the identity accepted without an overlap.
+ORTHONORMAL_ATOL = 1e-8
+
 
 def permute_carryover(
     strings_a: np.ndarray, strings_b: np.ndarray, overlap: np.ndarray, norb: int
@@ -196,11 +199,17 @@ class FragmentSQD:
             fragment: The fragment problem.
             counts: The fragment's measured counts. The right half of each key
                 holds the alpha occupations.
-            ao_ovlp: AO overlap matrix, used to map carryover between bases;
-                None means an orthonormal AO basis.
+            ao_ovlp: AO overlap matrix, used to map carryover between bases, such
+                as ``embedding.ao_ovlp``. None is allowed only if the fragment's
+                orbitals are orthonormal without an overlap, or carryover is
+                disabled.
 
         Returns:
             The fragment energy and LAS-basis RDMs of the lowest-energy batch.
+
+        Raises:
+            ValueError: If carryover is enabled, ``ao_ovlp`` is None and the
+                fragment's orbitals are not orthonormal without an overlap.
         """
         result, self.state = self.step(fragment, counts, self.state, ao_ovlp=ao_ovlp)
         return result
@@ -214,6 +223,8 @@ class FragmentSQD:
         ao_ovlp: np.ndarray | None = None,
     ) -> tuple[FragmentResult, SQDState]:
         """Solve ``fragment`` from ``state`` without changing ``self.state``.
+
+        Arguments and errors are those of :meth:`solve`.
 
         Returns:
             The result and the state for the next solve.
@@ -233,7 +244,8 @@ class FragmentSQD:
 
         Maps the carryover strings of ``state`` onto the fragment's sampling
         basis, merges them with ``include_configurations``, and creates the
-        generator from ``state``.
+        generator from ``state``. Arguments and errors are those of
+        :meth:`solve`.
         """
         norb = fragment.norb
         options = dict(self.options)
@@ -246,10 +258,13 @@ class FragmentSQD:
         carryover_orbitals = None
         if carryover_threshold != np.inf:
             carryover_orbitals = fragment.sampling_orbitals
+            if ao_ovlp is None:
+                ao_ovlp = np.eye(len(carryover_orbitals))
+                _check_orthonormal(carryover_orbitals, fragment.index)
             options["include_configurations"] = _include_carryover(
                 state,
                 carryover_orbitals,
-                np.eye(len(carryover_orbitals)) if ao_ovlp is None else ao_ovlp,
+                ao_ovlp,
                 norb,
                 options.get("include_configurations"),
             )
@@ -305,6 +320,17 @@ class FragmentSQD:
             inputs.rng.bit_generator.state, carryover_strings, carryover_orbitals
         )
         return result, state
+
+
+def _check_orthonormal(orbitals: np.ndarray, index: int) -> None:
+    """Raise ValueError unless ``orbitals`` are orthonormal without an overlap."""
+    gram = orbitals.T @ orbitals
+    if not np.allclose(gram, np.eye(len(gram)), rtol=0, atol=ORTHONORMAL_ATOL):
+        raise ValueError(
+            f"fragment {index}: its orbitals are not orthonormal without an AO "
+            "overlap, so carryover needs one; pass ao_ovlp=embedding.ao_ovlp or "
+            "solve with lassqd.solve_fragments"
+        )
 
 
 def _include_carryover(

@@ -450,6 +450,25 @@ def test_fragment_sqd_carryover_follows_orbitals_in_ao_basis(
     assert np.isclose(result.e_tot, expected_energy)
 
 
+@pytest.mark.parametrize("carryover_threshold", [1e-3, None])
+def test_fragment_sqd_needs_an_overlap_for_non_orthonormal_orbitals(
+    carryover_threshold,
+):
+    # S-orthonormal LAS orbitals, which are not orthonormal without the overlap.
+    las_orbitals = np.diag(np.array([1.0, 2.0, 4.0]) ** -0.5)
+    solver = FragmentSQD(
+        1, max_iterations=1, carryover_threshold=carryover_threshold, seed=0
+    )
+    args = ({"010010": 10}, 3, (1, 1), 0.0, np.diag([0.0, 1.0, 2.0]))
+    h2 = np.zeros((3,) * 4)
+    if carryover_threshold is None:
+        # Without carryover the overlap is never used.
+        solve_hamiltonian(solver, *args, h2, las_orbitals=las_orbitals)
+    else:
+        with pytest.raises(ValueError, match="not orthonormal"):
+            solve_hamiltonian(solver, *args, h2, las_orbitals=las_orbitals)
+
+
 @pytest.mark.parametrize("max_dim,expected_dims", [(1, (1, 1)), ((2, 1), (2, 1))])
 def test_fragment_sqd_max_dim(max_dim, expected_dims, iterations):
     solver = FragmentSQD(

@@ -14,7 +14,7 @@ def test_records_load_without_heavy_dependencies(tmp_path, h6):
     counts = [full_counts(f.norb, f.nelec) for f in embedding.fragments]
     samples = FragmentSamples(embedding, counts, ("job",))
     solver = FragmentSQD(50, max_iterations=1, seed=0)
-    result = solver.solve(embedding.fragments[0], counts[0])
+    result = solver.solve(embedding.fragments[0], counts[0], ao_ovlp=embedding.ao_ovlp)
     records = {
         "LASState": embedding.state,
         "Fragment": embedding.fragments[0],
