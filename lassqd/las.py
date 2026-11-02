@@ -13,7 +13,8 @@ RDMs, with kernels that do not solve anything:
    mrh take one orbital step. mrh computes the energy from the RDMs; the
    fragment energies it receives are only logged.
 
-Build the LAS object with :func:`LASSCF`. No other module calls mrh.
+Build the LAS object with :func:`LASSCF`. This is the only module that calls
+mrh's LASSCF kernel; :mod:`lassqd.pdft` uses mrh's LAS-PDFT.
 """
 
 from collections.abc import Callable, Sequence
