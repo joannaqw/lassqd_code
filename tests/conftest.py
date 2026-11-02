@@ -12,7 +12,7 @@ from qiskit.primitives import (
     SamplerPubResult,
 )
 
-from lassqd import LASSCFNoSymm
+from lassqd import Fragment, LASSCFNoSymm
 
 
 def full_counts(norb, nelec, count=10):
@@ -50,6 +50,16 @@ class FullSpaceSampler(BaseSamplerV2):
         job = PrimitiveJob(lambda: PrimitiveResult([SamplerPubResult(data)]))
         job._submit()
         return job
+
+
+def solve_hamiltonian(
+    solver, counts, norb, nelec, h0, h1s, h2, *, las_orbitals=None, ao_ovlp=None
+):
+    """Solve a fragment Hamiltonian, given in its LAS basis, with ``solver``."""
+    fragment = Fragment.from_hamiltonian(
+        norb, nelec, h0, h1s, h2, las_orbitals=las_orbitals
+    )
+    return solver.solve(fragment, counts, ao_ovlp=ao_ovlp)
 
 
 def empty_circuit(fragment):

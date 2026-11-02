@@ -140,14 +140,16 @@ def save_cycle(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     np.save(output_dir / "current_orb", step.state.mo_coeff)
-    for ifrag, (solver, history) in enumerate(zip(solvers, histories)):
+    for ifrag, (solver, result, history) in enumerate(
+        zip(solvers, step.results, histories)
+    ):
         directory = output_dir / f"data_carryover_frag{ifrag}"
         directory.mkdir(exist_ok=True)
-        solver.sci_state.save(directory / "sci_vec")
+        result.sci_state.save(directory / "sci_vec")
         for name, rows in history.items():
             np.save(directory / name, np.asarray(rows))
-        if solver.carryover_strings is not None:
-            alpha, beta = solver.carryover_strings
+        if solver.state.carryover_strings is not None:
+            alpha, beta = solver.state.carryover_strings
             np.save(directory / "alpha_strings", alpha)
             np.save(directory / "beta_strings", beta)
     for history in histories:

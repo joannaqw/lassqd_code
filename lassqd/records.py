@@ -6,15 +6,20 @@ mrh, PySCF or Qiskit installed.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import h5py
 import numpy as np
 
 from lassqd import _hdf5
+
+if TYPE_CHECKING:
+    from qiskit_addon_sqd.fermion import SCIState
 
 
 def _frozen(array: np.ndarray) -> np.ndarray:
@@ -287,7 +292,7 @@ def _digest(*arrays: np.ndarray) -> str:
 
 @dataclass(frozen=True, eq=False)
 class Embedding:
-    """The fragment problems of one LAS state, from :func:`lassqd.las.capture_embedding`.
+    """The fragment problems of one LAS state; see :func:`lassqd.las.capture_embedding`.
 
     Attributes:
         state: Orbitals and fragment RDMs the fragment Hamiltonians were built from.
@@ -337,3 +342,98 @@ class FragmentSamples:
                 f"{len(self.counts)} counts for "
                 f"{len(self.embedding.fragments)} fragments"
             )
+
+
+@dataclass(frozen=True, eq=False)
+class SQDState:
+    """What a :class:`lassqd.sqd.FragmentSQD` carries from one solve to the next.
+
+    Attributes:
+        rng_state: ``bit_generator.state`` of the random generator for the next
+            solve.
+        carryover_strings: Alpha and beta strings to include in the next solve,
+            in the sampling basis of :attr:`carryover_orbitals`; None before the
+            first solve with carryover.
+        carryover_orbitals: AO coefficients of that sampling basis, shape
+            ``(nao, norb)``, used to map the strings onto the next solve's basis.
+    """
+
+    rng_state: dict[str, Any]
+    carryover_strings: tuple[np.ndarray, np.ndarray] | None = None
+    carryover_orbitals: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "rng_state", copy.deepcopy(self.rng_state))
+        if (self.carryover_strings is None) != (self.carryover_orbitals is None):
+            raise ValueError(
+                "carryover_strings and carryover_orbitals must be given together"
+            )
+        if self.carryover_strings is not None:
+            strings_a, strings_b = self.carryover_strings
+            object.__setattr__(
+                self, "carryover_strings", (_frozen(strings_a), _frozen(strings_b))
+            )
+            object.__setattr__(
+                self, "carryover_orbitals", _frozen(self.carryover_orbitals)
+            )
+
+    @classmethod
+    def from_seed(cls, seed: int | np.random.Generator | None = None) -> SQDState:
+        """The initial state for ``seed``; a generator is copied, not shared."""
+        if not isinstance(seed, np.random.Generator):
+            seed = np.random.default_rng(seed)
+        return cls(seed.bit_generator.state)
+
+    def rng(self) -> np.random.Generator:
+        """A new generator in the stored state."""
+        bit_generator = getattr(np.random, self.rng_state["bit_generator"])()
+        bit_generator.state = self.rng_state
+        return np.random.Generator(bit_generator)
+
+
+@dataclass(frozen=True, eq=False)
+class FragmentResult:
+    """One fragment's SQD solution, from :meth:`lassqd.sqd.FragmentSQD.solve`.
+
+    Attributes:
+        e_tot: Fragment energy, including ``h0``.
+        dm1s: Spin-separated 1-RDMs in the LAS basis, shape ``(2, norb, norb)``.
+        dm2: Spin-summed 2-RDM in the LAS basis, shape ``(norb,) * 4``.
+        amplitudes: Amplitudes of the lowest-energy SCI state, shape
+            ``(len(ci_strs_a), len(ci_strs_b))``, in the sampling basis.
+        ci_strs_a: Alpha determinant strings of that state.
+        ci_strs_b: Beta determinant strings of that state.
+        norb: Number of fragment orbitals.
+        nelec: ``(neleca, nelecb)``.
+        fragment_digest: :meth:`Fragment.digest` of the solved fragment.
+    """
+
+    e_tot: float
+    dm1s: np.ndarray
+    dm2: np.ndarray
+    amplitudes: np.ndarray
+    ci_strs_a: np.ndarray
+    ci_strs_b: np.ndarray
+    norb: int
+    nelec: tuple[int, int]
+    fragment_digest: str
+
+    def __post_init__(self) -> None:
+        for name in ("dm1s", "dm2", "amplitudes", "ci_strs_a", "ci_strs_b"):
+            object.__setattr__(self, name, _frozen(getattr(self, name)))
+        object.__setattr__(self, "e_tot", float(self.e_tot))
+        object.__setattr__(self, "norb", int(self.norb))
+        object.__setattr__(self, "nelec", tuple(int(n) for n in self.nelec))
+
+    @property
+    def sci_state(self) -> SCIState:
+        """The SCI state as a ``qiskit_addon_sqd.fermion.SCIState``."""
+        from qiskit_addon_sqd.fermion import SCIState
+
+        return SCIState(
+            amplitudes=self.amplitudes,
+            ci_strs_a=self.ci_strs_a,
+            ci_strs_b=self.ci_strs_b,
+            norb=self.norb,
+            nelec=self.nelec,
+        )

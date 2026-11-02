@@ -1,11 +1,10 @@
 import copy
 import pickle
-from contextlib import nullcontext
 from unittest.mock import patch
 
 import numpy as np
 import pytest
-from conftest import FullSpaceSampler, empty_circuit, full_counts
+from conftest import FullSpaceSampler, empty_circuit
 from ffsim.qiskit import (
     PRE_INIT,
     FfsimSampler,
@@ -19,17 +18,22 @@ from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_aer import AerSimulator
 from qiskit_aer.primitives import SamplerV2
 
+import lassqd.las
 from lassqd import (
-    FragmentSamples,
+    Embedding,
+    FragmentResult,
     FragmentSQD,
     LASSCFNoSymm,
+    LASState,
     build_circuits,
     capture_embedding,
     collect_samples,
     initial_state,
+    replay_orbital_step,
     run_lassqd,
-    solve_cycle,
+    solve_fragments,
     submit_circuits,
+    update_orbitals,
 )
 
 
@@ -45,25 +49,23 @@ def h6_las(mf):
     return LASSCFNoSymm(mf, (3, 3), ((2, 1), (1, 2)), spin_sub=(2, 2))
 
 
-def cycle_by_stages(las, state, solvers):
-    """One cycle from the stages, starting from ``state``."""
+def sample(las, state):
+    """Capture the embedding of ``state`` and sample it with full-space counts."""
     circuits = build_circuits(capture_embedding(las, state), empty_circuit)
     job = submit_circuits(FullSpaceSampler(las), circuits)
-    samples = collect_samples(circuits, job.result(), job_ids=job.job_id())
-    return circuits, samples, solve_cycle(las, samples, solvers)
+    return collect_samples(circuits, job.result(), job_ids=job.job_id())
 
 
-class RecordingSQD(FragmentSQD):
-    """Records the Hamiltonian each call receives."""
+def cycle_by_stages(las, state, solvers):
+    """One cycle from the stages, starting from ``state``."""
+    samples = sample(las, state)
+    results = solve_fragments(samples, solvers)
+    return samples, update_orbitals(las, samples.embedding, results)
 
-    def __call__(self, norb, nelec, h0, h1s, h2):
-        self.hamiltonian = (h0, h1s, h2)
-        return super().__call__(norb, nelec, h0, h1s, h2)
 
-
-class FailingSolver:
-    def __call__(self, norb, nelec, h0, h1s, h2):
-        raise RuntimeError("fragment solve failed")
+def perturbed(result, **changes):
+    fields = {name: getattr(result, name) for name in result.__dataclass_fields__}
+    return FragmentResult(**{**fields, **changes})
 
 
 def run(mf, las, mo, **kwargs):
@@ -130,26 +132,26 @@ def test_result_is_a_consistent_wave_function(h6):
         casdm2fr=list(state.casdm2fr),
     )
     assert np.isclose(e, result.e_tot)
-    # run_lassqd restores the settings it overrides.
+    assert len(result.results) == las.nfrags
+    # run_lassqd restores the settings and fragment solvers it overrides.
     assert las.max_cycle_macro != 1
+    assert las.max_cycle_rdmjk != 0
 
 
-def test_solvers_get_their_fragment_orbitals(h6):
-    mf, las, mo = h6
+def test_carryover_is_kept_in_the_fragment_ao_basis(h6):
+    _, las, mo = h6
     solvers = [FragmentSQD(100, max_iterations=1, seed=0) for _ in range(las.nfrags)]
-    run_lassqd(
-        las,
-        initial_state(las, mo),
-        solvers,
-        FullSpaceSampler(las),
-        circuit_builder=empty_circuit,
-        max_cycles=1,
-    )
+    state = initial_state(las, mo)
+    samples, _ = cycle_by_stages(las, state, solvers)
     # One cycle: the fragments were solved at the input orbitals.
     start = las.ncore
-    for solver, norb in zip(solvers, las.ncas_sub):
-        assert np.array_equal(solver.las_orbitals, mo[:, start : start + norb])
-        assert np.allclose(solver.ao_ovlp, mf.get_ovlp())
+    for solver, fragment, norb in zip(
+        solvers, samples.embedding.fragments, las.ncas_sub
+    ):
+        assert np.array_equal(fragment.las_orbitals, mo[:, start : start + norb])
+        assert np.array_equal(
+            solver.state.carryover_orbitals, fragment.sampling_orbitals
+        )
         start += norb
 
 
@@ -170,7 +172,7 @@ def test_stages_reproduce_run_lassqd(h6):
     e_hist = []
     state = initial_state(las, mo)
     for _ in range(3):
-        _, _, step = cycle_by_stages(las, state, solvers)
+        _, step = cycle_by_stages(las, state, solvers)
         state = step.state
         e_hist.append(step.e_tot)
     np.testing.assert_allclose(e_hist, result.e_hist, rtol=0, atol=1e-10)
@@ -185,61 +187,120 @@ def test_stages_reproduce_run_lassqd(h6):
         np.testing.assert_allclose(dm, ref, rtol=0, atol=1e-10)
 
 
-def test_captured_hamiltonians_are_the_solved_ones(h6):
+def test_replay_receives_the_captured_hamiltonians(h6):
     _, las, mo = h6
-    solvers = [RecordingSQD(100, max_iterations=1, seed=0) for _ in range(las.nfrags)]
+    solvers = make_solvers(las)
+    checked = []
+    real_check = lassqd.las._check_hamiltonian
+
+    def check(fragment, norb, nelec, h0, h1s, h2):
+        captured = (fragment.h0, fragment.h1s_las, fragment.h2_las)
+        checked.append(
+            all(np.array_equal(a, b) for a, b in zip((h0, h1s, h2), captured))
+        )
+        return real_check(fragment, norb, nelec, h0, h1s, h2)
+
     # The second cycle continues from the first cycle's orbitals and RDMs.
     state = initial_state(las, mo)
-    for _ in range(2):
-        circuits, _, step = cycle_by_stages(las, state, solvers)
-        state = step.state
-        for solver, fragment in zip(solvers, circuits.embedding.fragments):
-            captured = (fragment.h0, fragment.h1s_las, fragment.h2_las)
-            for solved, ref in zip(solver.hamiltonian, captured):
-                assert np.array_equal(solved, ref)
+    with patch("lassqd.las._check_hamiltonian", check):
+        for _ in range(2):
+            _, step = cycle_by_stages(las, state, solvers)
+            state = step.state
+    # mrh passes bit-identical Hamiltonians, one per fragment and cycle.
+    assert checked == [True] * (2 * las.nfrags)
+
+
+def test_replay_uses_only_the_fragment_rdms(h6):
+    # mrh computes the energy from the RDMs; fragment energies are only logged.
+    _, las, mo = h6
+    samples = sample(las, initial_state(las, mo))
+    results = solve_fragments(samples, make_solvers(las))
+    step = update_orbitals(las, samples.embedding, results)
+    shifted = [perturbed(r, e_tot=r.e_tot + 1.0) for r in results]
+    again = update_orbitals(las, samples.embedding, shifted)
+    assert again.e_tot == step.e_tot
+    assert np.array_equal(again.state.mo_coeff, step.state.mo_coeff)
+    for a, b in zip(
+        again.state.casdm1frs + again.state.casdm2fr,
+        step.state.casdm1frs + step.state.casdm2fr,
+    ):
+        assert np.array_equal(a, b)
 
 
 def test_saved_samples_resolve_identically_in_a_new_las(h6):
     mf, las, mo = h6
     solvers = make_solvers(las)
     # One cycle first, so the solvers have carryover and orbital state.
-    _, _, first = cycle_by_stages(las, initial_state(las, mo), solvers)
-    circuits = build_circuits(capture_embedding(las, first.state), empty_circuit)
-    samples = collect_samples(
-        circuits, submit_circuits(FullSpaceSampler(las), circuits).result()
-    )
+    _, first = cycle_by_stages(las, initial_state(las, mo), solvers)
+    samples = sample(las, first.state)
     saved_samples, saved_solvers = pickle.dumps(samples), copy.deepcopy(solvers)
-    step = solve_cycle(las, samples, solvers)
+    results = solve_fragments(samples, solvers)
+    step = update_orbitals(las, samples.embedding, results)
     # Resume after a failure: a new LAS object, the saved samples and solver state.
-    resumed = solve_cycle(h6_las(mf), pickle.loads(saved_samples), saved_solvers)
+    samples = pickle.loads(saved_samples)
+    resumed = update_orbitals(
+        h6_las(mf), samples.embedding, solve_fragments(samples, saved_solvers)
+    )
     assert np.isclose(resumed.e_tot, step.e_tot, rtol=0, atol=1e-10)
     np.testing.assert_allclose(
         resumed.state.mo_coeff, step.state.mo_coeff, rtol=0, atol=1e-8
     )
     for solver, saved in zip(solvers, saved_solvers):
         for strings, saved_strings in zip(
-            solver.carryover_strings, saved.carryover_strings
+            solver.state.carryover_strings, saved.state.carryover_strings
         ):
             np.testing.assert_array_equal(strings, saved_strings)
 
 
-@pytest.mark.parametrize("fail_in", ["setup", "solve"])
-def test_solve_cycle_restores_las_settings_on_failure(h6, fail_in):
+def test_update_orbitals_checks_results(h6):
     _, las, mo = h6
-    saved = las.max_cycle_macro, las.max_cycle_rdmjk
-    counts = [full_counts(n, ne) for n, ne in zip(las.ncas_sub, las.nelecas_sub)]
-    samples = FragmentSamples(capture_embedding(las, initial_state(las, mo)), counts)
-    failure = (
-        patch(
-            "lassqd.hybrid.set_fragment_kernels",
+    samples = sample(las, initial_state(las, mo))
+    embedding = samples.embedding
+    results = solve_fragments(samples, make_solvers(las))
+    with pytest.raises(ValueError, match="results for"):
+        update_orbitals(las, embedding, results[:1])
+    swapped = [perturbed(results[0], fragment_digest=results[1].fragment_digest)]
+    with pytest.raises(ValueError, match="different fragment problem"):
+        update_orbitals(las, embedding, swapped + results[1:])
+    with pytest.raises(ValueError, match="solvers for"):
+        solve_fragments(samples, make_solvers(las)[:1])
+
+
+@pytest.mark.parametrize("fail_in", ["setup", "hamiltonian"])
+def test_replay_restores_las_on_failure(h6, fail_in):
+    _, las, mo = h6
+    saved = las.fciboxes, las.max_cycle_macro, las.max_cycle_rdmjk
+    samples = sample(las, initial_state(las, mo))
+    results = solve_fragments(samples, make_solvers(las))
+    if fail_in == "setup":
+        failure = patch(
+            "lassqd.las._set_fragment_kernels",
             side_effect=RuntimeError("setup failed"),
         )
-        if fail_in == "setup"
-        else nullcontext()
-    )
-    with failure, pytest.raises(RuntimeError):
-        solve_cycle(las, samples, [FailingSolver(), FailingSolver()])
-    assert (las.max_cycle_macro, las.max_cycle_rdmjk) == saved
+        error = pytest.raises(RuntimeError, match="setup failed")
+    else:
+        # A Hamiltonian that does not match the one mrh passes during replay.
+        def check(fragment, *args):
+            raise ValueError("differs from the captured one")
+
+        failure = patch("lassqd.las._check_hamiltonian", check)
+        error = pytest.raises(ValueError, match="captured")
+    with failure, error:
+        update_orbitals(las, samples.embedding, results)
+    assert (las.fciboxes, las.max_cycle_macro, las.max_cycle_rdmjk) == saved
+
+
+def test_replay_rejects_a_different_hamiltonian(h6):
+    _, las, mo = h6
+    samples = sample(las, initial_state(las, mo))
+    embedding = samples.embedding
+    results = solve_fragments(samples, make_solvers(las))
+    # Other starting RDMs give other embedded Hamiltonians than those captured.
+    moved = update_orbitals(las, embedding, results).state
+    other_rdms = LASState(embedding.state.mo_coeff, moved.casdm1frs, moved.casdm2fr)
+    mismatched = Embedding(other_rdms, embedding.fragments, embedding.ao_ovlp)
+    with pytest.raises(ValueError, match="differs from the captured one"):
+        replay_orbital_step(las, mismatched, results)
 
 
 @pytest.mark.parametrize(
@@ -265,8 +326,6 @@ def test_lucj_sampling_in_hybrid_loop(h6, sampler_type, groups, shots):
         )
         pass_manager.pre_init = PRE_INIT
 
-    counts_per_cycle = []
-
     def circuit_builder(fragment):
         # Exercise native LUCJ gates without repeating the variational optimization.
         norb, nelec = fragment.norb, fragment.nelec
@@ -285,10 +344,10 @@ def test_lucj_sampling_in_hybrid_loop(h6, sampler_type, groups, shots):
         qc.append(UCJOpSpinUnbalancedJW(op), qc.qubits)
         return qc
 
-    def record_counts(cycle, step):
-        counts_per_cycle.append([solver.counts.copy() for solver in solvers])
-
-    with patch.object(sampler, "run", wraps=sampler.run) as submit:
+    with (
+        patch.object(sampler, "run", wraps=sampler.run) as submit,
+        patch("lassqd.hybrid.solve_fragments", wraps=solve_fragments) as solve,
+    ):
         result = run_lassqd(
             las,
             initial_state(las, mo),
@@ -300,8 +359,8 @@ def test_lucj_sampling_in_hybrid_loop(h6, sampler_type, groups, shots):
             circuit_builder=circuit_builder,
             max_cycles=2,
             conv_tol=0.0,
-            callback=record_counts,
         )
+    counts_per_cycle = [call.args[0].counts for call in solve.call_args_list]
 
     # One job per cycle, with either two independent circuits or one glued circuit.
     assert submit.call_count == 2

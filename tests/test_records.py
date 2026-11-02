@@ -11,7 +11,7 @@ from lassqd import (
     fragment_hamiltonians,
     initial_state,
 )
-from lassqd.fragment import fragment_mo_basis, fragment_rohf, from_mo
+from lassqd.fragment import fragment_rohf, from_mo, to_mo
 from lassqd.las import _capture_hamiltonians
 
 
@@ -87,14 +87,14 @@ def embedding(h6):
     return capture_embedding(las, initial_state(las, mo))
 
 
-def test_fragment_basis_matches_fragment_mo_basis(embedding):
+def test_fragment_basis_is_the_rohf_basis(embedding):
     for fragment in embedding.fragments:
         args = (fragment.h1s_las[0], fragment.h2_las, fragment.norb, fragment.nelec)
-        basis, h1, h2 = fragment_mo_basis(*args)
-        assert np.array_equal(fragment.basis, basis)
+        mf = fragment_rohf(*args)
+        h1, h2 = to_mo(mf.mo_coeff, fragment.h1s_las[0], fragment.h2_las)
+        assert np.array_equal(fragment.basis, mf.mo_coeff)
         assert np.array_equal(fragment.h1, h1)
         assert np.array_equal(fragment.h2, h2)
-        mf = fragment_rohf(*args)
         assert np.array_equal(fragment.mo_occ, mf.mo_occ)
         assert np.array_equal(fragment.mo_energy, mf.mo_energy)
         assert fragment.rohf_converged

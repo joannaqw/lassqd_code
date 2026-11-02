@@ -16,16 +16,29 @@ if TYPE_CHECKING:
         collect_samples,
         submit_circuits,
     )
-    from lassqd.hybrid import CycleResult, HybridResult, run_lassqd, solve_cycle
+    from lassqd.hybrid import (
+        CycleResult,
+        HybridResult,
+        run_lassqd,
+        solve_fragments,
+        update_orbitals,
+    )
     from lassqd.las import (
         LASSCFNoSymm,
         capture_embedding,
         fragment_hamiltonians,
         initial_state,
-        set_fragment_kernels,
+        replay_orbital_step,
     )
     from lassqd.pdft import lassqd_pdft_energy
-    from lassqd.records import Embedding, Fragment, FragmentSamples, LASState
+    from lassqd.records import (
+        Embedding,
+        Fragment,
+        FragmentResult,
+        FragmentSamples,
+        LASState,
+        SQDState,
+    )
     from lassqd.sqd import FragmentSQD
 
 _EXPORTS = {
@@ -33,21 +46,24 @@ _EXPORTS = {
     "Embedding": "lassqd.records",
     "Fragment": "lassqd.records",
     "FragmentCircuits": "lassqd.circuits",
+    "FragmentResult": "lassqd.records",
     "FragmentSQD": "lassqd.sqd",
     "FragmentSamples": "lassqd.records",
     "HybridResult": "lassqd.hybrid",
     "LASSCFNoSymm": "lassqd.las",
     "LASState": "lassqd.records",
+    "SQDState": "lassqd.records",
     "build_circuits": "lassqd.circuits",
     "capture_embedding": "lassqd.las",
     "collect_samples": "lassqd.circuits",
     "fragment_hamiltonians": "lassqd.las",
     "initial_state": "lassqd.las",
     "lassqd_pdft_energy": "lassqd.pdft",
+    "replay_orbital_step": "lassqd.las",
     "run_lassqd": "lassqd.hybrid",
-    "set_fragment_kernels": "lassqd.las",
-    "solve_cycle": "lassqd.hybrid",
+    "solve_fragments": "lassqd.hybrid",
     "submit_circuits": "lassqd.circuits",
+    "update_orbitals": "lassqd.hybrid",
 }
 
 __all__ = [
@@ -55,21 +71,24 @@ __all__ = [
     "Embedding",
     "Fragment",
     "FragmentCircuits",
+    "FragmentResult",
     "FragmentSQD",
     "FragmentSamples",
     "HybridResult",
     "LASSCFNoSymm",
     "LASState",
+    "SQDState",
     "build_circuits",
     "capture_embedding",
     "collect_samples",
     "fragment_hamiltonians",
     "initial_state",
     "lassqd_pdft_energy",
+    "replay_orbital_step",
     "run_lassqd",
-    "set_fragment_kernels",
-    "solve_cycle",
+    "solve_fragments",
     "submit_circuits",
+    "update_orbitals",
 ]
 
 

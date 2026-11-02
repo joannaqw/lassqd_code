@@ -16,7 +16,7 @@ from pyscf import gto
 
 from lassqd.records import from_mo, to_mo
 
-__all__ = ["fragment_mo_basis", "fragment_rohf", "from_mo", "to_mo"]
+__all__ = ["fragment_rohf", "from_mo", "to_mo"]
 
 if TYPE_CHECKING:
     from pyscf.scf.rohf import ROHF
@@ -50,22 +50,3 @@ def fragment_rohf(
     mf._eri = h2
     mf.kernel()
     return mf
-
-
-def fragment_mo_basis(
-    h1: np.ndarray, h2: np.ndarray, norb: int, nelec: tuple[int, int]
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Find the fragment ROHF orbitals and rotate the fragment Hamiltonian into them.
-
-    Args:
-        h1: One-electron integrals, shape ``(norb, norb)``.
-        h2: Two-electron integrals in chemists' notation, shape ``(norb,) * 4``.
-        norb: Number of fragment orbitals.
-        nelec: ``(neleca, nelecb)``.
-
-    Returns:
-        ``(mo_coeff, h1_mo, h2_mo)``: the fragment ROHF orbitals and the fragment
-        Hamiltonian in that basis.
-    """
-    mo_coeff = fragment_rohf(h1, h2, norb, nelec).mo_coeff
-    return (mo_coeff,) + to_mo(mo_coeff, h1, h2)

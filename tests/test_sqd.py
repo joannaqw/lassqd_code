@@ -3,24 +3,32 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
-from conftest import full_counts
+from conftest import full_counts, solve_hamiltonian
 from pyscf import fci
 from qiskit_addon_sqd.fermion import (
     SCIResult,
+    SCIState,
     diagonalize_fermionic_hamiltonian,
     solve_sci,
     solve_sci_batch,
 )
 
-from lassqd import FragmentSQD, fragment_hamiltonians, initial_state
+from lassqd import (
+    Fragment,
+    FragmentSQD,
+    SQDState,
+    capture_embedding,
+    initial_state,
+)
 from lassqd.sqd import permute_carryover
 
 
 @pytest.fixture
 def fragment(h6):
+    """The first h6 fragment, ``(norb, nelec, h0, h1s, h2)`` in the LAS basis."""
     _, las, mo = h6
-    h0, h1s, h2 = fragment_hamiltonians(las, initial_state(las, mo))[0]
-    return las.ncas_sub[0], las.nelecas_sub[0], h0, h1s, h2
+    f = capture_embedding(las, initial_state(las, mo)).fragments[0]
+    return f.norb, f.nelec, f.h0, f.h1s_las, f.h2_las
 
 
 @pytest.fixture
@@ -62,18 +70,18 @@ def test_fragment_sqd_defaults_converge_and_carry_over(iterations):
     solver = FragmentSQD(10, callback=iterations.append)
     h1 = np.diag([0.0, 1.0])
     h2 = np.zeros((2,) * 4)
-    solver.counts = {"0101": 10}
-    e1, _, _ = solver(2, (1, 1), 0.0, h1, h2)
+    e1 = solve_hamiltonian(solver, {"0101": 10}, 2, (1, 1), 0.0, h1, h2).e_tot
     history = summarize(iterations)
     assert np.isclose(e1, 0.0)
     assert history["e_hist"].shape == (2, 1)
     assert history["occupancy_hist"].shape == (2, 4)
-    assert all(np.array_equal(strings, [1]) for strings in solver.carryover_strings)
+    assert all(
+        np.array_equal(strings, [1]) for strings in solver.state.carryover_strings
+    )
 
     # Default carryover retains the ground state when only an excited state is sampled.
-    solver.counts = {"1010": 10}
     iterations.clear()
-    e2, _, _ = solver(2, (1, 1), 0.0, h1, h2)
+    e2 = solve_hamiltonian(solver, {"1010": 10}, 2, (1, 1), 0.0, h1, h2).e_tot
     history = summarize(iterations)
     assert np.isclose(e2, e1)
     assert history["e_hist"].shape == (2, 1)
@@ -100,9 +108,9 @@ def test_fragment_sqd_random_stream_advances_between_calls(carryover_threshold):
     for _ in range(3):
         for solver, observed in zip(solvers, observations):
             observed.clear()
-            solver.counts = {"0101": 10, "1010": 10}
-            solver(2, (1, 1), 0.0, h1, h2)
-            assert solver.carryover_strings is None
+            counts = {"0101": 10, "1010": 10}
+            solve_hamiltonian(solver, counts, 2, (1, 1), 0.0, h1, h2)
+            assert solver.state.carryover_strings is None
         # Integer seeds and supplied generators yield the same sequence of runs.
         energies = [summarize(observed)["e_hist"] for observed in observations]
         assert np.array_equal(*energies)
@@ -122,10 +130,11 @@ def test_fragment_sqd_full_space_is_exact(fragment, carryover_threshold, iterati
         carryover_threshold=carryover_threshold,
         callback=iterations.append,
     )
-    solver.counts = full_counts(norb, nelec)
+    counts = full_counts(norb, nelec)
     # Wrong electron counts must be postselected initially and recovered later.
-    solver.counts.update({"0" * (2 * norb): 100, "1" * (2 * norb): 100})
-    e, dm1s, dm2 = solver(norb, nelec, h0, h1s, h2)
+    counts.update({"0" * (2 * norb): 100, "1" * (2 * norb): 100})
+    result = solve_hamiltonian(solver, counts, norb, nelec, h0, h1s, h2)
+    e, dm1s, dm2 = result.e_tot, result.dm1s, result.dm2
     history = summarize(iterations)
 
     assert np.isclose(e, h0 + fci_energy(norb, nelec, h1s[0], h2, 0.75))
@@ -165,8 +174,8 @@ def test_fragment_sqd_returns_best_across_iterations(carryover_threshold, iterat
         carryover_threshold=carryover_threshold,
         callback=iterations.append,
     )
-    solver.counts = {"0101": 10, "1010": 10}
-    e, dm1s, dm2 = solver(2, (1, 1), h0, h1, h2)
+    result = solve_hamiltonian(solver, {"0101": 10, "1010": 10}, 2, (1, 1), h0, h1, h2)
+    e, dm1s, dm2 = result.e_tot, result.dm1s, result.dm2
     history = summarize(iterations)
 
     assert np.isclose(e, h0)
@@ -179,13 +188,15 @@ def test_fragment_sqd_returns_best_across_iterations(carryover_threshold, iterat
     if carryover_threshold is None:
         assert history["e_hist"][-1].min() > e - h0
         assert np.all(history["d_hist"] == 1)
-        assert solver.carryover_strings is None
+        assert solver.state.carryover_strings is None
         assert np.allclose(history["occupancy_hist"][-1], [0, 1, 0, 1])
     else:
         # Carryover retains the ground determinant even when it is not sampled.
         assert np.allclose(history["e_hist"][-1], 0)
         assert np.all(history["d_hist"][-1] == 4)
-        assert all(np.array_equal(strings, [1]) for strings in solver.carryover_strings)
+        assert all(
+            np.array_equal(strings, [1]) for strings in solver.state.carryover_strings
+        )
         assert np.allclose(history["occupancy_hist"][-1], [1, 0, 1, 0])
 
 
@@ -198,12 +209,12 @@ def test_fragment_sqd_carryover_persists_between_calls(fragment):
         seed=0,
         carryover_threshold=1e-3,
     )
-    solver.counts = full_counts(norb, nelec)
-    e1, _, _ = solver(norb, nelec, h0, h1s, h2)
-    assert len(solver.carryover_strings[0]) > 0
-    # Second call: only one determinant is sampled, the rest must come from carryover.
-    solver.counts = {next(iter(solver.counts)): 1}
-    e2, _, _ = solver(norb, nelec, h0, h1s, h2)
+    counts = full_counts(norb, nelec)
+    e1 = solve_hamiltonian(solver, counts, norb, nelec, h0, h1s, h2).e_tot
+    assert len(solver.state.carryover_strings[0]) > 0
+    # Second solve: only one determinant is sampled, the rest must come from carryover.
+    counts = {next(iter(counts)): 1}
+    e2 = solve_hamiltonian(solver, counts, norb, nelec, h0, h1s, h2).e_tot
     assert np.isclose(e1, e2)
 
 
@@ -223,14 +234,18 @@ def test_fragment_sqd_convergence_and_callback(
         occupancies_tol=occupancies_tol,
         callback=callback,
     )
-    solver.counts = {"1010": 10}
     h1 = np.diag([0.0, 1.0])
+    h2 = np.zeros((2,) * 4)
+
+    def solve():
+        return solve_hamiltonian(solver, {"1010": 10}, 2, (1, 1), 3.0, h1, h2).e_tot
+
     # The addon receives the caller's callback itself, without an internal wrapper.
     with patch(
         "lassqd.sqd.diagonalize_fermionic_hamiltonian",
         wraps=diagonalize_fermionic_hamiltonian,
     ) as diagonalize:
-        e, _, _ = solver(2, (1, 1), 3.0, h1, np.zeros((2,) * 4))
+        e = solve()
     assert diagonalize.call_args.kwargs["callback"] is callback
     assert np.isclose(e, 5.0)
     assert len(iterations) == expected_iterations
@@ -241,25 +256,24 @@ def test_fragment_sqd_convergence_and_callback(
     assert np.allclose(history["e_hist"], 2.0)
 
     # The caller controls whether to retain observations between solves.
-    solver(2, (1, 1), 3.0, h1, np.zeros((2,) * 4))
+    solve()
     assert len(iterations) == 2 * expected_iterations
     iterations.clear()
-    solver(2, (1, 1), 3.0, h1, np.zeros((2,) * 4))
+    solve()
     assert len(iterations) == expected_iterations
 
-    # Both the callback and batch dimensions can change between calls.
+    # Both the callback and batch dimensions can change between solves.
     replacement = []
-    solver.sqd_options.update(
-        max_iterations=1, num_batches=3, callback=replacement.append
-    )
-    solver(2, (1, 1), 3.0, h1, np.zeros((2,) * 4))
+    solver.options.update(max_iterations=1, num_batches=3)
+    solver.callback = replacement.append
+    solve()
     assert len(iterations) == expected_iterations
     assert len(replacement) == 1
     assert summarize(replacement)["e_hist"].shape == (1, 3)
     assert summarize(replacement)["occupancy_hist"].shape == (1, 4)
 
-    solver.sqd_options["callback"] = None
-    solver(2, (1, 1), 3.0, h1, np.zeros((2,) * 4))
+    solver.callback = None
+    solve()
     assert len(replacement) == 1
 
 
@@ -286,8 +300,10 @@ def test_fragment_sqd_custom_solver_without_rdms(fragment):
         sci_solver=sci_solver,
         callback=callbacks.append,
     )
-    solver.counts = full_counts(norb, nelec)
-    e, dm1s, dm2 = solver(norb, nelec, h0, h1s, h2)
+    result = solve_hamiltonian(
+        solver, full_counts(norb, nelec), norb, nelec, h0, h1s, h2
+    )
+    e, dm1s, dm2 = result.e_tot, result.dm1s, result.dm2
     assert len(batches) == len(callbacks) == 2
     assert all(a is b and len(a) == 3 for a, b in zip(batches, callbacks))
     assert np.isclose(e, h0 + fci_energy(norb, nelec, h1s[0], h2, 0.75))
@@ -320,11 +336,11 @@ def test_fragment_sqd_spin_constraint_is_configured_through_sci_solver(spin_sq, 
         else partial(solve_sci_batch, spin_sq=spin_sq, max_cycle=200, tol=1e-12)
     )
     solver = FragmentSQD(4, max_iterations=1, sci_solver=sci_solver)
-    solver.counts = full_counts(2, (1, 1))
-    e, dm1s, dm2 = solver(2, (1, 1), 0.0, h1, h2)
+    result = solve_hamiltonian(solver, full_counts(2, (1, 1)), 2, (1, 1), 0.0, h1, h2)
+    e, dm1s, dm2 = result.e_tot, result.dm1s, result.dm2
     assert np.isclose(e, energy)
     assert np.isclose(
-        solver.sci_state.spin_square(), 2.0 if spin_sq is None else spin_sq
+        result.sci_state.spin_square(), 2.0 if spin_sq is None else spin_sq
     )
     assert np.isclose(
         e, np.einsum("ij,sij->", h1, dm1s) + 0.5 * np.einsum("ijkl,ijkl", h2, dm2)
@@ -335,14 +351,15 @@ def test_fragment_sqd_initial_occupancies_recover_entirely_noisy_counts():
     h1 = np.diag([0.0, 1.0])
     h2 = np.zeros((2,) * 4)
     solver = FragmentSQD(10, max_iterations=1, seed=0)
-    solver.counts = {"0000": 10, "1111": 10}
+    counts = {"0000": 10, "1111": 10}
     with pytest.raises(ValueError, match="valid bitstrings"):
-        solver(2, (1, 1), 0.0, h1, h2)
-    solver.sqd_options["initial_occupancies"] = (
+        solve_hamiltonian(solver, counts, 2, (1, 1), 0.0, h1, h2)
+    solver.options["initial_occupancies"] = (
         np.array([1.0, 0.0]),
         np.array([1.0, 0.0]),
     )
-    e, dm1s, _ = solver(2, (1, 1), 0.0, h1, h2)
+    result = solve_hamiltonian(solver, counts, 2, (1, 1), 0.0, h1, h2)
+    e, dm1s = result.e_tot, result.dm1s
     assert np.isclose(e, 0.0)
     assert np.allclose(dm1s, [np.diag([1.0, 0.0])] * 2)
 
@@ -350,12 +367,13 @@ def test_fragment_sqd_initial_occupancies_recover_entirely_noisy_counts():
 @pytest.mark.parametrize("symmetrize_spin", [False, True])
 def test_fragment_sqd_spin_symmetry(symmetrize_spin):
     solver = FragmentSQD(1, max_iterations=1, symmetrize_spin=symmetrize_spin)
-    solver.counts = {"1001": 10}
-    e, _, _ = solver(2, (1, 1), 0.0, np.diag([0.0, 1.0]), np.zeros((2,) * 4))
-    assert np.isclose(e, 0.0 if symmetrize_spin else 1.0)
-    assert solver.sci_state.amplitudes.size == (4 if symmetrize_spin else 1)
+    result = solve_hamiltonian(
+        solver, {"1001": 10}, 2, (1, 1), 0.0, np.diag([0.0, 1.0]), np.zeros((2,) * 4)
+    )
+    assert np.isclose(result.e_tot, 0.0 if symmetrize_spin else 1.0)
+    assert result.amplitudes.size == (4 if symmetrize_spin else 1)
     if symmetrize_spin:
-        assert np.array_equal(solver.sci_state.ci_strs_a, solver.sci_state.ci_strs_b)
+        assert np.array_equal(result.ci_strs_a, result.ci_strs_b)
 
 
 @pytest.mark.parametrize("carryover_threshold", [None, 1e-3])
@@ -366,20 +384,18 @@ def test_fragment_sqd_included_configurations_and_carryover(
     h1 = np.diag([0.0, 1.0, 2.0])
     h2 = np.zeros((3,) * 4)
     solver = FragmentSQD(1, max_iterations=1, carryover_threshold=carryover_threshold)
-    solver.counts = {"010010": 10}
-    solver(3, (1, 1), 0.0, h1, h2)
-    solver.sqd_options["include_configurations"] = include
-    solver.counts = {"100100": 10}
-    e, _, _ = solver(3, (1, 1), 0.0, h1, h2)
+    solve_hamiltonian(solver, {"010010": 10}, 3, (1, 1), 0.0, h1, h2)
+    solver.options["include_configurations"] = include
+    result = solve_hamiltonian(solver, {"100100": 10}, 3, (1, 1), 0.0, h1, h2)
     separate_spins = isinstance(include, tuple)
     expected_a = {1, 4}
     expected_b = {2, 4} if separate_spins else {1, 4}
     if carryover_threshold is not None:
         expected_a.add(2)
         expected_b.add(2)
-    assert set(solver.sci_state.ci_strs_a) == expected_a
-    assert set(solver.sci_state.ci_strs_b) == expected_b
-    assert np.isclose(e, 1.0 if separate_spins else 0.0)
+    assert set(result.ci_strs_a) == expected_a
+    assert set(result.ci_strs_b) == expected_b
+    assert np.isclose(result.e_tot, 1.0 if separate_spins else 0.0)
 
 
 @pytest.mark.parametrize(
@@ -401,18 +417,37 @@ def test_fragment_sqd_carryover_follows_orbitals_in_ao_basis(
     las_orbitals = np.diag(ao_ovlp.diagonal() ** -0.5)
     h2 = np.zeros((3,) * 4)
     solver = FragmentSQD(1, max_iterations=1, carryover_threshold=1e-3)
-    solver.las_orbitals, solver.ao_ovlp = las_orbitals, ao_ovlp
-    solver.counts = {"010010": 10}
-    solver(3, (1, 1), 0.0, np.diag([0.0, 1.0, 2.0]), h2)
+    solve_hamiltonian(
+        solver,
+        {"010010": 10},
+        3,
+        (1, 1),
+        0.0,
+        np.diag([0.0, 1.0, 2.0]),
+        h2,
+        las_orbitals=las_orbitals,
+        ao_ovlp=ao_ovlp,
+    )
     # Carried over: ROHF orbital 1 (energy 1) doubly occupied.
-    assert all(np.array_equal(strings, [2]) for strings in solver.carryover_strings)
+    assert all(
+        np.array_equal(strings, [2]) for strings in solver.state.carryover_strings
+    )
     if reorder_las_basis:
-        solver.las_orbitals = las_orbitals[:, [1, 0, 2]]
-    solver.counts = {"100100": 10}
-    e, _, _ = solver(3, (1, 1), 0.0, np.diag([1.0, 0.0, 2.0]), h2)
-    assert set(solver.sci_state.ci_strs_a) == expected_strings
-    assert set(solver.sci_state.ci_strs_b) == expected_strings
-    assert np.isclose(e, expected_energy)
+        las_orbitals = las_orbitals[:, [1, 0, 2]]
+    result = solve_hamiltonian(
+        solver,
+        {"100100": 10},
+        3,
+        (1, 1),
+        0.0,
+        np.diag([1.0, 0.0, 2.0]),
+        h2,
+        las_orbitals=las_orbitals,
+        ao_ovlp=ao_ovlp,
+    )
+    assert set(result.ci_strs_a) == expected_strings
+    assert set(result.ci_strs_b) == expected_strings
+    assert np.isclose(result.e_tot, expected_energy)
 
 
 @pytest.mark.parametrize("max_dim,expected_dims", [(1, (1, 1)), ((2, 1), (2, 1))])
@@ -425,19 +460,20 @@ def test_fragment_sqd_max_dim(max_dim, expected_dims, iterations):
         include_configurations=[1, 2, 4],
         callback=iterations.append,
     )
-    solver.counts = full_counts(3, (1, 1))
-    e, _, _ = solver(3, (1, 1), 0.0, np.diag([0.0, 1.0, 2.0]), np.zeros((3,) * 4))
+    e = solve_hamiltonian(
+        solver,
+        full_counts(3, (1, 1)),
+        3,
+        (1, 1),
+        0.0,
+        np.diag([0.0, 1.0, 2.0]),
+        np.zeros((3,) * 4),
+    ).e_tot
     history = summarize(iterations)
     assert np.isclose(e, 0.0)
     assert np.all(history["a_hist"] == expected_dims[0])
     assert np.all(history["b_hist"] == expected_dims[1])
     assert np.all(history["d_hist"] == np.prod(expected_dims))
-
-
-def test_fragment_sqd_requires_counts(fragment):
-    norb, nelec, h0, h1s, h2 = fragment
-    with pytest.raises(RuntimeError):
-        FragmentSQD(10)(norb, nelec, h0, h1s, h2)
 
 
 def test_permute_carryover():
@@ -452,3 +488,90 @@ def test_permute_carryover():
     new_a, new_b = permute_carryover(strings_a, strings_b, reverse, norb)
     assert set(new_a) == {0b110, 0b101}
     assert set(new_b) == {0b100}
+
+
+def test_failed_solve_leaves_state_unchanged():
+    solver = FragmentSQD(10, max_iterations=1, seed=0)
+    before = solver.state
+    with pytest.raises(ValueError, match="valid bitstrings"):
+        solve_hamiltonian(
+            solver,
+            {"0000": 10, "1111": 10},
+            2,
+            (1, 1),
+            0.0,
+            np.diag([0.0, 1.0]),
+            np.zeros((2,) * 4),
+        )
+    assert solver.state is before
+
+
+def assert_same_state(a, b):
+    assert a.rng_state == b.rng_state
+    assert (a.carryover_strings is None) == (b.carryover_strings is None)
+    if a.carryover_strings is not None:
+        for x, y in zip(a.carryover_strings, b.carryover_strings):
+            assert np.array_equal(x, y)
+        assert np.array_equal(a.carryover_orbitals, b.carryover_orbitals)
+
+
+def assert_same_result(a, b):
+    assert a.e_tot == b.e_tot
+    for name in ("dm1s", "dm2", "amplitudes", "ci_strs_a", "ci_strs_b"):
+        assert np.array_equal(getattr(a, name), getattr(b, name))
+    assert a.fragment_digest == b.fragment_digest
+
+
+def test_restoring_state_reproduces_a_solve(fragment):
+    norb, nelec, h0, h1s, h2 = fragment
+    solver = FragmentSQD(5, max_iterations=2, num_batches=2, seed=0)
+    counts = full_counts(norb, nelec)
+    solve_hamiltonian(solver, counts, norb, nelec, h0, h1s, h2)
+    # The second solve continues the random stream and the carryover.
+    saved = solver.state
+    first = solve_hamiltonian(solver, counts, norb, nelec, h0, h1s, h2)
+    after_first = solver.state
+    solver.state = saved
+    again = solve_hamiltonian(solver, counts, norb, nelec, h0, h1s, h2)
+    assert_same_result(first, again)
+    assert_same_state(after_first, solver.state)
+    # Without restoring, the next solve draws different batches.
+    assert solver.state.rng_state != saved.rng_state
+
+
+def test_prepare_run_finalize_is_step(fragment):
+    norb, nelec, h0, h1s, h2 = fragment
+    f = Fragment.from_hamiltonian(norb, nelec, h0, h1s, h2)
+    solver = FragmentSQD(5, max_iterations=2, num_batches=2, seed=0)
+    counts = full_counts(norb, nelec)
+    state = solver.state
+    inputs = solver.prepare(f, counts, state)
+    split = solver.finalize(f, inputs, inputs.run())
+    together = solver.step(f, counts, state)
+    assert_same_result(split[0], together[0])
+    assert_same_state(split[1], together[1])
+    # step and prepare leave the solver's own state alone.
+    assert solver.state is state
+
+
+def test_fragment_result_sci_state(fragment):
+    norb, nelec, h0, h1s, h2 = fragment
+    solver = FragmentSQD(50, max_iterations=1)
+    result = solve_hamiltonian(
+        solver, full_counts(norb, nelec), norb, nelec, h0, h1s, h2
+    )
+    state = result.sci_state
+    assert isinstance(state, SCIState)
+    assert np.array_equal(state.amplitudes, result.amplitudes)
+    assert (state.norb, tuple(state.nelec)) == (norb, nelec)
+    assert np.isclose(np.sum(state.amplitudes**2), 1.0)
+
+
+def test_sqd_state_copies_generators():
+    rng = np.random.default_rng(0)
+    state = SQDState.from_seed(rng)
+    rng.random(10)
+    assert state.rng().random() == np.random.default_rng(0).random()
+    assert SQDState.from_seed(0).rng_state == state.rng_state
+    with pytest.raises(ValueError, match="together"):
+        SQDState(state.rng_state, (np.array([1]), np.array([1])))

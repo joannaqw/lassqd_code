@@ -1,16 +1,33 @@
-"""Sample-based quantum diagonalization as a LASSCF fragment kernel."""
+"""Sample-based quantum diagonalization of LAS fragments.
 
+:class:`FragmentSQD` solves a :class:`lassqd.records.Fragment` on its measured
+counts in three parts, so that an MPI job can run them on the right ranks:
+
+1. :meth:`FragmentSQD.prepare` (rank 0) maps carryover onto the fragment's
+   sampling basis and resolves the SQD arguments into :class:`SQDInputs`;
+2. :meth:`SQDInputs.run` calls
+   :func:`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`, which every
+   rank of a collective solve enters with equal inputs;
+3. :meth:`FragmentSQD.finalize` (rank 0) rotates the RDMs to the LAS basis and
+   records the next :class:`lassqd.records.SQDState`.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from inspect import signature
 from typing import Any
 
 import numpy as np
 from qiskit.primitives import BitArray
 from qiskit_addon_sqd.fermion import (
+    SCIResult,
     SCIState,
     diagonalize_fermionic_hamiltonian,
 )
 
-from lassqd.fragment import fragment_mo_basis, from_mo
+from lassqd.records import Fragment, FragmentResult, SQDState
 
 _DEFAULT_CARRYOVER_THRESHOLD = (
     signature(diagonalize_fermionic_hamiltonian)
@@ -45,169 +62,268 @@ def permute_carryover(
     )
 
 
+@dataclass
+class SQDInputs:
+    """The arguments of one SQD call, from :meth:`FragmentSQD.prepare`.
+
+    Attributes:
+        one_body_tensor: Alpha one-electron integrals in the sampling basis.
+        two_body_tensor: Two-electron integrals in the sampling basis.
+        bit_array: The fragment's measurements.
+        samples_per_batch: Samples drawn for each batch.
+        norb: Number of fragment orbitals.
+        nelec: ``(neleca, nelecb)``.
+        options: Keyword arguments of
+            :func:`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`,
+            with carryover merged into ``include_configurations`` and ``seed`` set
+            to the generator for this solve.
+        state: The solver state the inputs were prepared from.
+        carryover_orbitals: AO coefficients of the sampling basis, recorded with
+            the new carryover strings; None if carryover is disabled.
+    """
+
+    one_body_tensor: np.ndarray
+    two_body_tensor: np.ndarray
+    bit_array: BitArray
+    samples_per_batch: int
+    norb: int
+    nelec: tuple[int, int]
+    options: dict[str, Any]
+    state: SQDState
+    carryover_orbitals: np.ndarray | None
+
+    @property
+    def rng(self) -> np.random.Generator:
+        """The generator SQD draws from; it advances during :meth:`run`."""
+        return self.options["seed"]
+
+    def run(self) -> SCIResult:
+        """Run configuration recovery and diagonalization; returns the best batch."""
+        return diagonalize_fermionic_hamiltonian(
+            self.one_body_tensor,
+            self.two_body_tensor,
+            self.bit_array,
+            self.samples_per_batch,
+            self.norb,
+            self.nelec,
+            **self.options,
+        )
+
+
 class FragmentSQD:
-    """SQD solver for one LAS fragment, callable as a LASSCF fragment kernel.
+    """SQD solver for one LAS fragment.
 
-    ``solver(norb, nelec, h0, h1s, h2) -> (e, dm1s, dm2)``. Set ``solver.counts``
-    to the fragment's measured counts before each call (:func:`lassqd.run_lassqd`
-    does this).
-
-    Each call rotates the Hamiltonian to the fragment's ROHF orbitals and runs
-    up to ``max_iterations`` rounds of self-consistent configuration recovery,
-    with ``num_batches`` subsampled batches per round, using the addon's
+    Each solve runs up to ``max_iterations`` rounds of self-consistent
+    configuration recovery in the fragment's sampling basis, with
+    ``num_batches`` subsampled batches per round, using the addon's
     :func:`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`. Recovery
     uses the lowest-energy batch's occupancies from the preceding round. The
     returned energy, RDMs and carryover strings all come from the lowest-energy
-    batch across all rounds.
+    batch across all rounds. Only the alpha one-electron Hamiltonian is used.
 
-    Only the alpha one-electron Hamiltonian ``h1s[0]`` is used.
+    Carryover (enabled by default): determinants whose amplitude exceeds the
+    threshold are added to every batch of the next round, and of the next solve,
+    after being mapped onto that solve's sampling basis with
+    :func:`permute_carryover`. The bases are compared in the AO basis, using the
+    fragment's LAS orbitals and the AO overlap. Set ``carryover_threshold=None``
+    or ``np.inf`` to disable carryover.
 
-    Carryover (enabled by default): determinants whose amplitude
-    exceeds the threshold are added to every batch of the next round, and of the
-    next call, after being mapped onto that call's orbitals with
-    :func:`permute_carryover`. The orbitals are compared in the AO basis using
-    ``las_orbitals`` and ``ao_ovlp``, which :func:`lassqd.run_lassqd` sets.
-    Set ``carryover_threshold=None`` or ``np.inf`` to disable carryover.
-
-    After each call, ``e_tot`` includes ``h0``, ``dm1s`` and ``dm2`` use the LAS
-    basis, and ``sci_state`` uses the fragment ROHF basis. Record diagnostics with
-    the addon's ``callback`` option and save these attributes after the call.
+    The solver's continuation state, the random generator and the carryover
+    strings with their basis, is ``solver.state``, a
+    :class:`lassqd.records.SQDState`. :meth:`solve` replaces it only when a solve
+    succeeds; assign an earlier state to repeat a solve.
 
     Args:
         samples_per_batch: Samples drawn for each batch.
-        **sqd_options: Options for
+        seed: Seed of the random generator, or a generator whose current state is
+            copied. Each solve continues the stream where the previous one ended.
+        sci_solver: Batch solver passed to the addon, accepting
+            ``(ci_strings, h1, h2, norb, nelec)`` and returning a list of
+            ``SCIResult``; None uses the addon's ``solve_sci_batch``. Configure spin
+            constraints and Davidson settings here, for example
+            ``functools.partial(solve_sci_batch, spin_sq=2, tol=1e-12)``.
+        callback: ``callback(results)`` passed to the addon, receiving each
+            iteration's list of ``SCIResult`` objects, with energies excluding
+            ``h0`` and states in the sampling basis.
+        **options: Numerical options of
             :func:`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`,
             using the addon's names and defaults, including early stopping and
-            carryover. Stored in ``solver.sqd_options`` and editable between calls.
-            ``seed`` is converted to a persistent NumPy generator on use, so the
-            random stream advances across calls. ``callback(results)`` is passed
-            directly to the addon and receives each iteration's list of
-            ``SCIResult`` objects, with energies excluding ``h0``. Final solver
-            attributes are updated after the addon returns. States,
-            ``include_configurations`` and ``initial_occupancies`` use the current
-            fragment ROHF basis. Included configurations are merged with carryover
-            from previous calls before the addon's ``max_dim`` truncation.
-            Configure spin constraints and Davidson settings through ``sci_solver``,
-            for example ``functools.partial(solve_sci_batch, spin_sq=2, tol=1e-12)``.
-            Missing RDMs are computed from the returned state.
+            carryover. Stored in ``solver.options`` and editable between solves.
+            ``include_configurations`` and ``initial_occupancies`` use the
+            current sampling basis. Included configurations are merged with
+            carryover before the addon's ``max_dim`` truncation.
     """
 
-    def __init__(self, samples_per_batch: int, **sqd_options: Any) -> None:
-        self.samples_per_batch = samples_per_batch
-        self.sqd_options = sqd_options
-        self.counts: dict[str, int] | None = None
-        self.carryover_strings: tuple[np.ndarray, np.ndarray] | None = None
-        self.las_orbitals: np.ndarray | None = None
-        self.ao_ovlp: np.ndarray | None = None
-        self.prev_mo: np.ndarray | None = None
-
-    def __call__(
+    def __init__(
         self,
-        norb: int,
-        nelec: tuple[int, int],
-        h0: float,
-        h1s: np.ndarray,
-        h2: np.ndarray,
-    ) -> tuple[float, np.ndarray, np.ndarray]:
-        """Solve the fragment with SQD on ``self.counts``.
+        samples_per_batch: int,
+        *,
+        seed: int | np.random.Generator | None = None,
+        sci_solver: Callable[..., list[SCIResult]] | None = None,
+        callback: Callable[[list[SCIResult]], None] | None = None,
+        **options: Any,
+    ) -> None:
+        self.samples_per_batch = samples_per_batch
+        self.sci_solver = sci_solver
+        self.callback = callback
+        self.options = options
+        self.state = SQDState.from_seed(seed)
+
+    def solve(
+        self,
+        fragment: Fragment,
+        counts: Mapping[str, int],
+        *,
+        ao_ovlp: np.ndarray | None = None,
+    ) -> FragmentResult:
+        """Solve ``fragment`` on ``counts`` and advance ``self.state``.
 
         Args:
-            norb: Number of fragment orbitals.
-            nelec: ``(neleca, nelecb)``.
-            h0: Constant energy term.
-            h1s: One-electron integrals in the LAS basis, spin-separated with shape
-                ``(2, norb, norb)`` or spin-free with shape ``(norb, norb)``.
-            h2: Two-electron integrals in the LAS basis, in chemists' notation,
-                shape ``(norb,) * 4``.
+            fragment: The fragment problem.
+            counts: The fragment's measured counts. The right half of each key
+                holds the alpha occupations.
+            ao_ovlp: AO overlap matrix, used to map carryover between bases;
+                None means an orthonormal AO basis.
 
         Returns:
-            ``(e_tot, dm1s, dm2)``: the fragment energy including ``h0``, the
-            spin-separated 1-RDMs of shape ``(2, norb, norb)`` and the spin-summed
-            2-RDM of shape ``(norb,) * 4``, both in the LAS basis.
-
-        Raises:
-            RuntimeError: If ``self.counts`` has not been set.
+            The fragment energy and LAS-basis RDMs of the lowest-energy batch.
         """
-        if self.counts is None:
-            raise RuntimeError(
-                "FragmentSQD.counts must be set before the kernel is called"
-            )
-        h1 = h1s[0] if np.ndim(h1s) == 3 else h1s
-        mo_coeff, h1_mo, h2_mo = fragment_mo_basis(h1, h2, norb, nelec)
+        result, self.state = self.step(fragment, counts, self.state, ao_ovlp=ao_ovlp)
+        return result
 
-        self.sqd_options["seed"] = np.random.default_rng(self.sqd_options.get("seed"))
-        options = self.sqd_options.copy()
+    def step(
+        self,
+        fragment: Fragment,
+        counts: Mapping[str, int],
+        state: SQDState,
+        *,
+        ao_ovlp: np.ndarray | None = None,
+    ) -> tuple[FragmentResult, SQDState]:
+        """Solve ``fragment`` from ``state`` without changing ``self.state``.
+
+        Returns:
+            The result and the state for the next solve.
+        """
+        inputs = self.prepare(fragment, counts, state, ao_ovlp=ao_ovlp)
+        return self.finalize(fragment, inputs, inputs.run())
+
+    def prepare(
+        self,
+        fragment: Fragment,
+        counts: Mapping[str, int],
+        state: SQDState,
+        *,
+        ao_ovlp: np.ndarray | None = None,
+    ) -> SQDInputs:
+        """Resolve the SQD arguments for ``fragment``: the rank-0 setup of a solve.
+
+        Maps the carryover strings of ``state`` onto the fragment's sampling
+        basis, merges them with ``include_configurations``, and creates the
+        generator from ``state``.
+        """
+        norb = fragment.norb
+        options = dict(self.options)
         carryover_threshold = options.get(
             "carryover_threshold", _DEFAULT_CARRYOVER_THRESHOLD
         )
         if carryover_threshold is None:
             carryover_threshold = np.inf
         options["carryover_threshold"] = carryover_threshold
-        use_carryover = carryover_threshold != np.inf
-        if use_carryover:
-            options["include_configurations"] = self._include_carryover(
-                mo_coeff, norb, options.get("include_configurations")
+        carryover_orbitals = None
+        if carryover_threshold != np.inf:
+            carryover_orbitals = fragment.sampling_orbitals
+            options["include_configurations"] = _include_carryover(
+                state,
+                carryover_orbitals,
+                np.eye(len(carryover_orbitals)) if ao_ovlp is None else ao_ovlp,
+                norb,
+                options.get("include_configurations"),
             )
-
-        best = diagonalize_fermionic_hamiltonian(
-            h1_mo,
-            h2_mo,
-            BitArray.from_counts(self.counts, num_bits=2 * norb),
-            self.samples_per_batch,
-            norb,
-            nelec,
-            **options,
+        options["sci_solver"] = self.sci_solver
+        options["callback"] = self.callback
+        options["seed"] = state.rng()
+        return SQDInputs(
+            one_body_tensor=fragment.h1,
+            two_body_tensor=fragment.h2,
+            bit_array=BitArray.from_counts(counts, num_bits=2 * norb),
+            samples_per_batch=self.samples_per_batch,
+            norb=norb,
+            nelec=fragment.nelec,
+            options=options,
+            state=state,
+            carryover_orbitals=carryover_orbitals,
         )
-        if use_carryover:
-            self.carryover_strings = self._carryover(
-                best.sci_state, carryover_threshold
-            )
 
-        self.sci_state = best.sci_state
-        self.e_tot = best.energy + h0
+    def finalize(
+        self, fragment: Fragment, inputs: SQDInputs, best: SCIResult
+    ) -> tuple[FragmentResult, SQDState]:
+        """Build the result and next state from SQD's best batch: rank-0 work.
+
+        Returns:
+            The fragment energy including ``h0`` with LAS-basis RDMs, and the state
+            for the next solve.
+        """
+        carryover_threshold = inputs.options["carryover_threshold"]
+        if carryover_threshold != np.inf:
+            carryover_strings = _carryover(best.sci_state, carryover_threshold)
+            carryover_orbitals = inputs.carryover_orbitals
+        else:
+            carryover_strings = inputs.state.carryover_strings
+            carryover_orbitals = inputs.state.carryover_orbitals
         rdm2 = best.rdm2
         if rdm2 is None:
             rdm2 = best.sci_state.rdm(rank=2, spin_summed=True)
-        self.dm1s, self.dm2 = from_mo(mo_coeff, best.sci_state.rdm(rank=1), rdm2)
-        return self.e_tot, self.dm1s, self.dm2
-
-    def _include_carryover(
-        self,
-        mo_coeff: np.ndarray,
-        norb: int,
-        include: list[int]
-        | np.ndarray
-        | tuple[list[int] | np.ndarray, list[int] | np.ndarray]
-        | None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Map previous strings to this call's orbitals and merge explicit strings."""
-        # Compare in the AO basis: LASSCF re-canonicalizes the LAS orbitals between
-        # calls. Without las_orbitals, the LAS basis is assumed fixed.
-        mo_ref, ovlp = mo_coeff, np.eye(norb)
-        if self.las_orbitals is not None:
-            mo_ref, ovlp = self.las_orbitals @ mo_coeff, self.ao_ovlp
-        if self.carryover_strings is None:
-            empty = np.array([], dtype=np.int64)
-            self.carryover_strings = (empty, empty)
-        else:
-            self.carryover_strings = permute_carryover(
-                *self.carryover_strings, mo_ref.T @ ovlp @ self.prev_mo, norb
-            )
-        self.prev_mo = mo_ref
-        if include is None:
-            return self.carryover_strings
-        include_a, include_b = (
-            include if isinstance(include, tuple) else (include, include)
+        dm1s, dm2 = fragment.rdms_to_las(best.sci_state.rdm(rank=1), rdm2)
+        sci_state = best.sci_state
+        result = FragmentResult(
+            e_tot=best.energy + fragment.h0,
+            dm1s=dm1s,
+            dm2=dm2,
+            amplitudes=sci_state.amplitudes,
+            ci_strs_a=sci_state.ci_strs_a,
+            ci_strs_b=sci_state.ci_strs_b,
+            norb=fragment.norb,
+            nelec=fragment.nelec,
+            fragment_digest=fragment.digest(),
         )
-        return (
-            np.union1d(include_a, self.carryover_strings[0]),
-            np.union1d(include_b, self.carryover_strings[1]),
+        state = SQDState(
+            inputs.rng.bit_generator.state, carryover_strings, carryover_orbitals
         )
+        return result, state
 
-    def _carryover(
-        self, sci_state: SCIState, carryover_threshold: float
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Alpha and beta strings of the determinants with ``|amplitude| >= carryover_threshold``."""
-        amplitudes = np.abs(sci_state.amplitudes)
-        alpha_idx, beta_idx = np.nonzero(amplitudes >= carryover_threshold)
-        return sci_state.ci_strs_a[alpha_idx], sci_state.ci_strs_b[beta_idx]
+
+def _include_carryover(
+    state: SQDState,
+    orbitals: np.ndarray,
+    ao_ovlp: np.ndarray,
+    norb: int,
+    include: list[int]
+    | np.ndarray
+    | tuple[list[int] | np.ndarray, list[int] | np.ndarray]
+    | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Map the carried strings onto ``orbitals`` and merge explicit strings."""
+    # Compare in the AO basis: LASSCF re-canonicalizes the LAS orbitals between
+    # solves.
+    if state.carryover_strings is None:
+        empty = np.array([], dtype=np.int64)
+        strings = (empty, empty)
+    else:
+        strings = permute_carryover(
+            *state.carryover_strings,
+            orbitals.T @ ao_ovlp @ state.carryover_orbitals,
+            norb,
+        )
+    if include is None:
+        return strings
+    include_a, include_b = include if isinstance(include, tuple) else (include, include)
+    return np.union1d(include_a, strings[0]), np.union1d(include_b, strings[1])
+
+
+def _carryover(
+    sci_state: SCIState, carryover_threshold: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Alpha and beta strings of the determinants with ``|amplitude| >= carryover_threshold``."""
+    amplitudes = np.abs(sci_state.amplitudes)
+    alpha_idx, beta_idx = np.nonzero(amplitudes >= carryover_threshold)
+    return sci_state.ci_strs_a[alpha_idx], sci_state.ci_strs_b[beta_idx]
