@@ -19,8 +19,11 @@ directly lets you save samples, re-solve them with other SQD settings, or resume
 after a classical failure without submitting another job.
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from pyscf.lib import logger
 from qiskit.primitives import BaseSamplerV2
@@ -34,7 +37,11 @@ from lassqd.circuits import (
 )
 from lassqd.las import LASSCFNoSymm, capture_embedding, replay_orbital_step
 from lassqd.records import Embedding, FragmentResult, FragmentSamples, LASState
-from lassqd.sqd import FragmentSQD
+
+if TYPE_CHECKING:
+    # Only for annotations: replay workers import this module, and SQD sets up
+    # MPI when it is imported.
+    from lassqd.sqd import FragmentSQD
 
 
 @dataclass

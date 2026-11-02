@@ -38,3 +38,14 @@ loaded = sorted(m for m in {HEAVY!r} if m in sys.modules)
 assert not loaded, loaded
 """
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_capture_and_replay_do_not_import_sqd():
+    # SQD detects MPI when it is imported, so capture and replay workers launched
+    # with several ranks must not import it.
+    code = """
+import sys
+from lassqd import capture_embedding, initial_state, update_orbitals
+assert "qiskit_addon_sqd" not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
