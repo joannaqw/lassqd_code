@@ -26,6 +26,7 @@ from qiskit_addon_sqd.fermion import (
     SCIState,
     diagonalize_fermionic_hamiltonian,
 )
+from scipy.optimize import linear_sum_assignment
 
 from lassqd.records import Fragment, FragmentResult, SQDState
 
@@ -41,7 +42,10 @@ def permute_carryover(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Map carried-over determinant strings onto a new orbital basis.
 
-    Each new orbital takes the occupation of the old orbital it overlaps most.
+    Each new orbital takes the occupation of one old orbital, matched one to one
+    so that electron numbers are preserved. Normally each new orbital is matched
+    to the old orbital it overlaps most. If two new orbitals overlap the same old
+    orbital most, the matching instead maximizes the total ``|overlap|``.
 
     Args:
         strings_a: Alpha determinant strings in the old basis, as integers.
@@ -52,8 +56,18 @@ def permute_carryover(
 
     Returns:
         Unique ``(strings_a, strings_b)`` in the new basis.
+
+    Raises:
+        ValueError: If ``norb`` is 64 or more, beyond 64-bit integer strings.
     """
-    rho = np.argmax(np.abs(overlap), axis=1)
+    if norb >= 64:
+        raise ValueError(
+            f"carryover supports at most 63 orbitals in 64-bit strings, got {norb}"
+        )
+    magnitude = np.abs(overlap)
+    rho = np.argmax(magnitude, axis=1)
+    if len(set(rho.tolist())) < norb:
+        _, rho = linear_sum_assignment(magnitude, maximize=True)
     # Bit p of a new string is bit rho[p] of the old string.
     weights = 1 << np.arange(norb)
     return tuple(

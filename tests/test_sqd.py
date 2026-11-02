@@ -575,3 +575,73 @@ def test_sqd_state_copies_generators():
     assert SQDState.from_seed(0).rng_state == state.rng_state
     with pytest.raises(ValueError, match="together"):
         SQDState(state.rng_state, (np.array([1]), np.array([1])))
+
+
+def popcounts(strings):
+    return [int(s).bit_count() for s in strings]
+
+
+@pytest.mark.parametrize(
+    "overlap,old,new",
+    [
+        # Both new orbitals overlap old orbital 1 most; the review's example
+        # turned alpha 0b10 into 0b11 and beta 0b01 into 0b0.
+        pytest.param(
+            [[0.6, 0.8], [-0.7, 0.71]], (0b10, 0b01), ({0b01}, {0b10}), id="2x2"
+        ),
+        # New orbitals 0 and 2 both overlap old orbital 1 most.
+        pytest.param(
+            [[0.3, 0.9, 0.3], [0.1, 0.2, 0.97], [0.95, 0.96, 0.1]],
+            (0b110, 0b001),
+            ({0b011}, {0b100}),
+            id="3x3",
+        ),
+    ],
+)
+def test_permute_carryover_preserves_electrons_when_orbitals_mix(overlap, old, new):
+    norb = len(overlap)
+    strings_a, strings_b = np.array([old[0]]), np.array([old[1]])
+    expected_a, expected_b = new
+    new_a, new_b = permute_carryover(strings_a, strings_b, np.array(overlap), norb)
+    assert popcounts(new_a) == popcounts(strings_a)
+    assert popcounts(new_b) == popcounts(strings_b)
+    assert set(new_a) == expected_a
+    assert set(new_b) == expected_b
+
+
+def test_permute_carryover_preserves_electrons_for_random_rotations():
+    rng = np.random.default_rng(0)
+    norb = 8
+    strings = np.array(
+        [
+            sum(1 << int(p) for p in rng.choice(norb, 3, replace=False))
+            for _ in range(20)
+        ]
+    )
+    for _ in range(50):
+        q, _ = np.linalg.qr(rng.normal(size=(norb, norb)))
+        new_a, new_b = permute_carryover(strings, strings, q, norb)
+        assert set(popcounts(new_a)) == set(popcounts(new_b)) == {3}
+
+
+def test_permute_carryover_keeps_the_largest_overlap_when_it_is_a_permutation():
+    rng = np.random.default_rng(1)
+    norb = 6
+    strings = np.arange(1 << norb)
+    for _ in range(20):
+        perm = rng.permutation(norb)
+        signs = rng.choice([-1.0, 1.0], norb)
+        overlap = np.eye(norb)[perm] * signs[:, None] + 0.2 * rng.normal(
+            size=(norb, norb)
+        )
+        rho = np.argmax(np.abs(overlap), axis=1)
+        if len(set(rho.tolist())) < norb:
+            continue
+        expected = np.unique(((strings[:, None] >> rho) & 1) @ (1 << np.arange(norb)))
+        new_a, _ = permute_carryover(strings, strings, overlap, norb)
+        assert np.array_equal(new_a, expected)
+
+
+def test_permute_carryover_rejects_64_orbitals():
+    with pytest.raises(ValueError, match="63 orbitals"):
+        permute_carryover(np.array([1]), np.array([1]), np.eye(64), 64)
