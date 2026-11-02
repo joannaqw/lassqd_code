@@ -10,6 +10,7 @@ import copy
 import hashlib
 import json
 import os
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -185,8 +186,7 @@ class Fragment(_Record):
         basis: ROHF orbital coefficients in the LAS basis, shape ``(norb, norb)``.
         mo_occ: ROHF occupations.
         mo_energy: ROHF orbital energies.
-        rohf_converged: Whether the ROHF calculation converged; always true for
-            fragments from :meth:`from_hamiltonian`, which raises otherwise.
+        rohf_converged: Whether the fragment ROHF calculation converged.
         h1: Alpha one-electron integrals in the sampling basis. Circuits and SQD
             use only the alpha integrals, also for a spin-dependent embedding.
         h2: Two-electron integrals in the sampling basis.
@@ -247,11 +247,10 @@ class Fragment(_Record):
                 assumes a fixed LAS basis and uses the identity.
 
         Returns:
-            The fragment, with ROHF run once on the alpha Hamiltonian.
-
-        Raises:
-            RuntimeError: If ROHF does not converge, since the sampling basis
-                would then be ill-defined.
+            The fragment, with ROHF run once on the alpha Hamiltonian. If ROHF
+            does not converge, a ``RuntimeWarning`` is issued and the fragment
+            keeps the last orbitals, which are still orthonormal, with
+            ``rohf_converged`` false.
         """
         from lassqd.fragment import fragment_rohf
 
@@ -262,7 +261,11 @@ class Fragment(_Record):
             las_orbitals = np.eye(norb)
         mf = fragment_rohf(h1s[0], h2, norb, nelec)
         if not mf.converged:
-            raise RuntimeError(f"ROHF did not converge for fragment {index}")
+            warnings.warn(
+                f"ROHF did not converge for fragment {index}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         h1, h2_mo = to_mo(mf.mo_coeff, h1s[0], h2)
         return cls(
             index=index,

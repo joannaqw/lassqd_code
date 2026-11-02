@@ -39,7 +39,8 @@ def fragment_rohf(
         nelec: ``(neleca, nelecb)``.
 
     Returns:
-        The converged ROHF object; its ``mo_coeff`` are the fragment orbitals.
+        The ROHF object, which may not have converged (see ``mf.converged``);
+        its ``mo_coeff`` are the fragment orbitals.
     """
     mf = _model_rohf(h1, h2, norb, nelec)
     mf.kernel()
