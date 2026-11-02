@@ -4,14 +4,14 @@ followed by an SQD-PDFT (tPBE) energy.
 Save an IBM Quantum account first (``QiskitRuntimeService.save_account(...)``).
 Each cycle writes the current LAS wave function (orbitals + fragment RDMs) to
 ``RDMS/casdm.h5`` as a :class:`lassqd.LASState`, which ``pdft_from_rdms.py`` can
-reuse.
+reuse, and each fragment's solver state to ``RDMS/sqd_state{i}.h5``. A later run
+continues from these files when they exist.
 """
 
 from functools import partial
 from pathlib import Path
 
 import ffsim
-import numpy as np
 from pyscf import cc, gto, lib, scf
 from pyscf.mcscf import avas
 from qiskit import QuantumCircuit
@@ -24,6 +24,8 @@ from lassqd import (
     Fragment,
     FragmentSQD,
     LASSCFNoSymm,
+    LASState,
+    SQDState,
     initial_state,
     lassqd_pdft_energy,
     run_lassqd,
@@ -94,14 +96,23 @@ pass_manager = generate_preset_pass_manager(
 pass_manager.pre_init = ffsim.qiskit.PRE_INIT
 
 
-def save_wave_function(cycle: int, step: CycleResult) -> None:
-    np.save("current_orb", step.state.mo_coeff)
-    Path("RDMS").mkdir(exist_ok=True)
-    step.state.save("RDMS/casdm.h5")
+checkpoint = Path("RDMS")
 
 
-# Restart from the orbitals of a previous run; use mo_localized to start fresh.
-state = initial_state(las, np.load("current_orb.npy"))
+def save_checkpoint(cycle: int, step: CycleResult) -> None:
+    checkpoint.mkdir(exist_ok=True)
+    step.state.save(checkpoint / "casdm.h5")
+    for ifrag, solver in enumerate(solvers):
+        solver.state.save(checkpoint / f"sqd_state{ifrag}.h5")
+
+
+# Continue from a previous run's checkpoint if there is one.
+if (checkpoint / "casdm.h5").exists():
+    state = LASState.load(checkpoint / "casdm.h5")
+    for ifrag, solver in enumerate(solvers):
+        solver.state = SQDState.load(checkpoint / f"sqd_state{ifrag}.h5")
+else:
+    state = initial_state(las, mo_localized)
 with Session(backend=backend) as session:
     sampler = SamplerV2(mode=session)
     sampler.options.max_execution_time = 10800
@@ -118,7 +129,7 @@ with Session(backend=backend) as session:
         pass_manager=pass_manager,
         shots=30000,
         max_cycles=1,
-        callback=save_wave_function,
+        callback=save_checkpoint,
     )
 e_pdft, _, _ = lassqd_pdft_energy(las, result.state, ot="tPBE")
 print("SQDPDFT energy", e_pdft)

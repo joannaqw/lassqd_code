@@ -134,24 +134,23 @@ def save_cycle(
 ) -> None:
     """Overwrite checkpoints with this cycle's data, then clear history buffers.
 
-    Called by ``run_lassqd`` after the fragment solves and orbital update. Fragment
-    states retain their SQD ROHF basis; ``current_orb`` holds the updated LAS basis.
+    Called by ``run_lassqd`` after the fragment solves and orbital update.
+    ``state.h5`` holds the updated LAS wave function and each fragment's
+    ``sqd_state.h5`` its solver state, enough to restart the next cycle. The
+    selected SCI states retain their sampling basis.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    np.save(output_dir / "current_orb", step.state.mo_coeff)
+    step.state.save(output_dir / "state.h5")
     for ifrag, (solver, result, history) in enumerate(
         zip(solvers, step.results, histories)
     ):
         directory = output_dir / f"data_carryover_frag{ifrag}"
         directory.mkdir(exist_ok=True)
+        solver.state.save(directory / "sqd_state.h5")
         result.sci_state.save(directory / "sci_vec")
         for name, rows in history.items():
             np.save(directory / name, np.asarray(rows))
-        if solver.state.carryover_strings is not None:
-            alpha, beta = solver.state.carryover_strings
-            np.save(directory / "alpha_strings", alpha)
-            np.save(directory / "beta_strings", beta)
     for history in histories:
         history.clear()
 

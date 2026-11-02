@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -20,6 +21,45 @@ from lassqd import _hdf5
 
 if TYPE_CHECKING:
     from qiskit_addon_sqd.fermion import SCIState
+
+
+class _Record:
+    """``save``/``load`` for a record type with ``_write``/``_read`` methods.
+
+    Files and nested groups carry the record's class name and
+    ``FORMAT_VERSION``, which are checked on reading.
+    """
+
+    FORMAT_VERSION = 1
+
+    def save(self, path: str | os.PathLike) -> None:
+        """Write the record to an HDF5 file, overwriting it if it exists."""
+        with _hdf5.create(path, type(self).__name__, self.FORMAT_VERSION) as f:
+            self._write(f)
+
+    @classmethod
+    def load(cls, path: str | os.PathLike):
+        """Read a record written by :meth:`save`."""
+        with _hdf5.open_record(path, cls.__name__, cls.FORMAT_VERSION) as f:
+            return cls._read(f)
+
+    def _write_child(self, group: h5py.Group, name: str, record: _Record) -> None:
+        sub = group.create_group(name)
+        _hdf5.write_header(sub, type(record).__name__, record.FORMAT_VERSION)
+        record._write(sub)
+
+    @staticmethod
+    def _read_child(group: h5py.Group, name: str, cls: type[_Record]):
+        sub = group[name]
+        _hdf5.check_header(sub, cls.__name__, cls.FORMAT_VERSION)
+        return cls._read(sub)
+
+    def _write(self, group: h5py.Group) -> None:
+        raise NotImplementedError
+
+    @classmethod
+    def _read(cls, group: h5py.Group):
+        raise NotImplementedError
 
 
 def _frozen(array: np.ndarray) -> np.ndarray:
@@ -71,7 +111,7 @@ def from_mo(
 
 
 @dataclass(frozen=True, eq=False)
-class LASState:
+class LASState(_Record):
     """A LAS wave function: orbitals and the fragment RDMs in their active space.
 
     Inputs are copied into read-only arrays. RDMs given without a root axis get
@@ -82,8 +122,6 @@ class LASState:
         casdm1frs: Per-fragment spin-separated 1-RDMs, shape ``(nroots, 2, n_i, n_i)``.
         casdm2fr: Per-fragment spin-summed 2-RDMs, shape ``(nroots, n_i, n_i, n_i, n_i)``.
     """
-
-    FORMAT_VERSION = 1
 
     mo_coeff: np.ndarray
     casdm1frs: tuple[np.ndarray, ...]
@@ -108,17 +146,6 @@ class LASState:
     def nfrags(self) -> int:
         return len(self.casdm1frs)
 
-    def save(self, path: str | os.PathLike) -> None:
-        """Write the state to an HDF5 file, overwriting it if it exists."""
-        with _hdf5.create(path, "LASState", self.FORMAT_VERSION) as f:
-            self._write(f)
-
-    @classmethod
-    def load(cls, path: str | os.PathLike) -> LASState:
-        """Read a state written by :meth:`save`."""
-        with _hdf5.open_record(path, "LASState", cls.FORMAT_VERSION) as f:
-            return cls._read(f)
-
     def _write(self, group: h5py.Group) -> None:
         _hdf5.write_array_list(group, "casdm1frs", self.casdm1frs)
         _hdf5.write_array_list(group, "casdm2frs", self.casdm2fr)
@@ -134,7 +161,7 @@ class LASState:
 
 
 @dataclass(frozen=True, eq=False)
-class Fragment:
+class Fragment(_Record):
     """One fragment's Hamiltonian at a fixed embedding, and its sampling basis.
 
     The sampling basis is the fragment's ROHF orbitals. Circuits prepare states
@@ -179,16 +206,7 @@ class Fragment:
     h2: np.ndarray
 
     def __post_init__(self) -> None:
-        for name in (
-            "h1s_las",
-            "h2_las",
-            "las_orbitals",
-            "basis",
-            "mo_occ",
-            "mo_energy",
-            "h1",
-            "h2",
-        ):
+        for name in self._ARRAYS:
             object.__setattr__(self, name, _frozen(getattr(self, name)))
         object.__setattr__(self, "index", int(self.index))
         object.__setattr__(self, "norb", int(self.norb))
@@ -280,6 +298,37 @@ class Fragment:
             self.h2_las,
         )
 
+    _ARRAYS = (
+        "h1s_las",
+        "h2_las",
+        "las_orbitals",
+        "basis",
+        "mo_occ",
+        "mo_energy",
+        "h1",
+        "h2",
+    )
+
+    def _write(self, group: h5py.Group) -> None:
+        group.attrs["index"] = self.index
+        group.attrs["norb"] = self.norb
+        group.attrs["nelec"] = self.nelec
+        group.attrs["h0"] = self.h0
+        group.attrs["rohf_converged"] = self.rohf_converged
+        for name in self._ARRAYS:
+            group.create_dataset(name, data=getattr(self, name))
+
+    @classmethod
+    def _read(cls, group: h5py.Group) -> Fragment:
+        return cls(
+            index=group.attrs["index"],
+            norb=group.attrs["norb"],
+            nelec=tuple(group.attrs["nelec"]),
+            h0=group.attrs["h0"],
+            rohf_converged=group.attrs["rohf_converged"],
+            **{name: group[name][()] for name in cls._ARRAYS},
+        )
+
 
 def _digest(*arrays: np.ndarray) -> str:
     sha = hashlib.sha256()
@@ -291,7 +340,7 @@ def _digest(*arrays: np.ndarray) -> str:
 
 
 @dataclass(frozen=True, eq=False)
-class Embedding:
+class Embedding(_Record):
     """The fragment problems of one LAS state; see :func:`lassqd.las.capture_embedding`.
 
     Attributes:
@@ -316,9 +365,28 @@ class Embedding:
             if fragment.index != i:
                 raise ValueError(f"fragment {i} has index {fragment.index}")
 
+    def _write(self, group: h5py.Group) -> None:
+        self._write_child(group, "state", self.state)
+        fragments = group.create_group("fragments")
+        for fragment in self.fragments:
+            self._write_child(fragments, str(fragment.index), fragment)
+        group.create_dataset("ao_ovlp", data=self.ao_ovlp)
+
+    @classmethod
+    def _read(cls, group: h5py.Group) -> Embedding:
+        fragments = group["fragments"]
+        return cls(
+            cls._read_child(group, "state", LASState),
+            [
+                cls._read_child(fragments, key, Fragment)
+                for key in sorted(fragments.keys(), key=int)
+            ],
+            group["ao_ovlp"][()],
+        )
+
 
 @dataclass(frozen=True, eq=False)
-class FragmentSamples:
+class FragmentSamples(_Record):
     """One cycle's per-fragment measurements, from :func:`lassqd.collect_samples`.
 
     Attributes:
@@ -343,9 +411,41 @@ class FragmentSamples:
                 f"{len(self.embedding.fragments)} fragments"
             )
 
+    def _write(self, group: h5py.Group) -> None:
+        self._write_child(group, "embedding", self.embedding)
+        # Keys keep their order: SQD draws samples by position.
+        counts = group.create_group("counts")
+        for i, fragment_counts in enumerate(self.counts):
+            sub = counts.create_group(str(i))
+            sub.create_dataset(
+                "keys",
+                data=np.array(list(fragment_counts), dtype=h5py.string_dtype()),
+            )
+            sub.create_dataset(
+                "values", data=np.array(list(fragment_counts.values()), dtype=np.int64)
+            )
+        group.attrs["job_ids"] = json.dumps(list(self.job_ids))
+
+    @classmethod
+    def _read(cls, group: h5py.Group) -> FragmentSamples:
+        counts = group["counts"]
+        return cls(
+            cls._read_child(group, "embedding", Embedding),
+            [
+                dict(
+                    zip(
+                        counts[key]["keys"].asstr()[()].tolist(),
+                        counts[key]["values"][()].tolist(),
+                    )
+                )
+                for key in sorted(counts.keys(), key=int)
+            ],
+            json.loads(group.attrs["job_ids"]),
+        )
+
 
 @dataclass(frozen=True, eq=False)
-class SQDState:
+class SQDState(_Record):
     """What a :class:`lassqd.sqd.FragmentSQD` carries from one solve to the next.
 
     Attributes:
@@ -390,9 +490,48 @@ class SQDState:
         bit_generator.state = self.rng_state
         return np.random.Generator(bit_generator)
 
+    def _write(self, group: h5py.Group) -> None:
+        group.attrs["rng_state"] = _dump_rng_state(self.rng_state)
+        if self.carryover_strings is not None:
+            group.create_dataset("carryover_a", data=self.carryover_strings[0])
+            group.create_dataset("carryover_b", data=self.carryover_strings[1])
+            group.create_dataset("carryover_orbitals", data=self.carryover_orbitals)
+
+    @classmethod
+    def _read(cls, group: h5py.Group) -> SQDState:
+        carryover_strings = carryover_orbitals = None
+        if "carryover_orbitals" in group:
+            carryover_strings = (group["carryover_a"][()], group["carryover_b"][()])
+            carryover_orbitals = group["carryover_orbitals"][()]
+        return cls(
+            _load_rng_state(group.attrs["rng_state"]),
+            carryover_strings,
+            carryover_orbitals,
+        )
+
+
+def _dump_rng_state(state: dict[str, Any]) -> str:
+    """JSON for a ``bit_generator.state``, exact for its integers and arrays."""
+
+    def encode(value):
+        if isinstance(value, np.ndarray):
+            return {"__ndarray__": value.tolist(), "dtype": value.dtype.str}
+        raise TypeError(f"cannot store {type(value).__name__} in a generator state")
+
+    return json.dumps(state, default=encode)
+
+
+def _load_rng_state(text: str) -> dict[str, Any]:
+    def decode(value):
+        if "__ndarray__" in value:
+            return np.array(value["__ndarray__"], dtype=value["dtype"])
+        return value
+
+    return json.loads(text, object_hook=decode)
+
 
 @dataclass(frozen=True, eq=False)
-class FragmentResult:
+class FragmentResult(_Record):
     """One fragment's SQD solution, from :meth:`lassqd.sqd.FragmentSQD.solve`.
 
     Attributes:
@@ -419,7 +558,7 @@ class FragmentResult:
     fragment_digest: str
 
     def __post_init__(self) -> None:
-        for name in ("dm1s", "dm2", "amplitudes", "ci_strs_a", "ci_strs_b"):
+        for name in self._ARRAYS:
             object.__setattr__(self, name, _frozen(getattr(self, name)))
         object.__setattr__(self, "e_tot", float(self.e_tot))
         object.__setattr__(self, "norb", int(self.norb))
@@ -436,4 +575,24 @@ class FragmentResult:
             ci_strs_b=self.ci_strs_b,
             norb=self.norb,
             nelec=self.nelec,
+        )
+
+    _ARRAYS = ("dm1s", "dm2", "amplitudes", "ci_strs_a", "ci_strs_b")
+
+    def _write(self, group: h5py.Group) -> None:
+        group.attrs["e_tot"] = self.e_tot
+        group.attrs["norb"] = self.norb
+        group.attrs["nelec"] = self.nelec
+        group.attrs["fragment_digest"] = self.fragment_digest
+        for name in self._ARRAYS:
+            group.create_dataset(name, data=getattr(self, name))
+
+    @classmethod
+    def _read(cls, group: h5py.Group) -> FragmentResult:
+        return cls(
+            e_tot=group.attrs["e_tot"],
+            norb=group.attrs["norb"],
+            nelec=tuple(group.attrs["nelec"]),
+            fragment_digest=group.attrs["fragment_digest"],
+            **{name: group[name][()] for name in cls._ARRAYS},
         )

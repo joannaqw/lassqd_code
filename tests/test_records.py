@@ -5,8 +5,10 @@ import pytest
 from lassqd import (
     Embedding,
     Fragment,
+    FragmentResult,
     FragmentSamples,
     LASState,
+    SQDState,
     capture_embedding,
     fragment_hamiltonians,
     initial_state,
@@ -62,7 +64,7 @@ def test_load_rejects_other_files(tmp_path, state):
     # The pre-record layout: RDM groups without a header or orbitals.
     with h5py.File(tmp_path / "old.h5", "w") as f:
         f.create_group("casdm1frs").create_dataset("0", data=state.casdm1frs[0])
-    with pytest.raises(ValueError, match="LASState"):
+    with pytest.raises(ValueError, match="expected LASState, found no record type"):
         LASState.load(tmp_path / "old.h5")
 
     state.save(tmp_path / "future.h5")
@@ -154,3 +156,90 @@ def test_embedding_and_samples_validate_fragments(embedding):
         Embedding(embedding.state, fragments[::-1], embedding.ao_ovlp)
     with pytest.raises(ValueError, match="counts"):
         FragmentSamples(embedding, [{"0": 1}])
+
+
+def assert_arrays_equal(a, b, names):
+    for name in names:
+        x, y = getattr(a, name), getattr(b, name)
+        assert np.array_equal(x, y) and x.dtype == y.dtype, name
+
+
+def assert_fragments_equal(a, b):
+    assert (a.index, a.norb, a.nelec, a.h0) == (b.index, b.norb, b.nelec, b.h0)
+    assert a.rohf_converged is b.rohf_converged
+    assert_arrays_equal(a, b, Fragment._ARRAYS)
+    assert a.digest() == b.digest()
+
+
+def test_embedding_round_trip(tmp_path, embedding):
+    embedding.save(tmp_path / "embedding.h5")
+    loaded = Embedding.load(tmp_path / "embedding.h5")
+    assert np.array_equal(loaded.ao_ovlp, embedding.ao_ovlp)
+    assert np.array_equal(loaded.state.mo_coeff, embedding.state.mo_coeff)
+    for a, b in zip(loaded.fragments, embedding.fragments, strict=True):
+        assert_fragments_equal(a, b)
+    embedding.fragments[1].save(tmp_path / "fragment.h5")
+    assert_fragments_equal(
+        Fragment.load(tmp_path / "fragment.h5"), embedding.fragments[1]
+    )
+
+
+def test_samples_round_trip_keeps_count_order(tmp_path, embedding):
+    # SQD draws samples by position, so the key order must survive.
+    counts = [{"110100": 3, "011001": 7, "101010": 1}, {}]
+    samples = FragmentSamples(embedding, counts, ("job-1", None))
+    samples.save(tmp_path / "samples.h5")
+    loaded = FragmentSamples.load(tmp_path / "samples.h5")
+    assert [list(c.items()) for c in loaded.counts] == [list(c.items()) for c in counts]
+    assert loaded.job_ids == ("job-1", None)
+    assert [f.digest() for f in loaded.embedding.fragments] == [
+        f.digest() for f in embedding.fragments
+    ]
+
+
+@pytest.mark.parametrize("carryover", [False, True])
+def test_sqd_state_round_trip_continues_the_stream(tmp_path, carryover):
+    rng = np.random.default_rng(5)
+    rng.random(3)
+    strings = (np.array([3, 5], dtype=np.int64), np.array([6], dtype=np.int64))
+    state = SQDState(
+        rng.bit_generator.state,
+        strings if carryover else None,
+        np.arange(6.0).reshape(3, 2) if carryover else None,
+    )
+    state.save(tmp_path / "sqd.h5")
+    loaded = SQDState.load(tmp_path / "sqd.h5")
+    assert loaded.rng_state == state.rng_state
+    assert loaded.rng().random(5).tolist() == rng.random(5).tolist()
+    if carryover:
+        for a, b in zip(loaded.carryover_strings, strings):
+            assert np.array_equal(a, b) and a.dtype == b.dtype
+        assert np.array_equal(loaded.carryover_orbitals, state.carryover_orbitals)
+    else:
+        assert loaded.carryover_strings is loaded.carryover_orbitals is None
+
+
+def test_fragment_result_round_trip(tmp_path, embedding):
+    from conftest import full_counts
+
+    from lassqd import FragmentSQD
+
+    fragment = embedding.fragments[0]
+    result = FragmentSQD(50, max_iterations=1, seed=0).solve(
+        fragment, full_counts(fragment.norb, fragment.nelec)
+    )
+    result.save(tmp_path / "result.h5")
+    loaded = FragmentResult.load(tmp_path / "result.h5")
+    assert (loaded.e_tot, loaded.norb, loaded.nelec) == (
+        result.e_tot,
+        result.norb,
+        result.nelec,
+    )
+    assert loaded.fragment_digest == result.fragment_digest == fragment.digest()
+    assert_arrays_equal(loaded, result, FragmentResult._ARRAYS)
+
+
+def test_load_checks_the_record_type(tmp_path, embedding):
+    embedding.state.save(tmp_path / "state.h5")
+    with pytest.raises(ValueError, match="expected Embedding, found a LASState record"):
+        Embedding.load(tmp_path / "state.h5")

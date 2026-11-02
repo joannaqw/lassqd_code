@@ -1,21 +1,39 @@
 import subprocess
 import sys
 
+from conftest import full_counts
+
+from lassqd import FragmentSamples, FragmentSQD, capture_embedding, initial_state
+
 HEAVY = ("mrh", "pyscf", "qiskit", "qiskit_addon_sqd")
 
 
-def test_records_import_without_heavy_dependencies(tmp_path):
+def test_records_load_without_heavy_dependencies(tmp_path, h6):
+    _, las, mo = h6
+    embedding = capture_embedding(las, initial_state(las, mo))
+    counts = [full_counts(f.norb, f.nelec) for f in embedding.fragments]
+    samples = FragmentSamples(embedding, counts, ("job",))
+    solver = FragmentSQD(50, max_iterations=1, seed=0)
+    result = solver.solve(embedding.fragments[0], counts[0])
+    records = {
+        "LASState": embedding.state,
+        "Fragment": embedding.fragments[0],
+        "Embedding": embedding,
+        "FragmentSamples": samples,
+        "SQDState": solver.state,
+        "FragmentResult": result,
+    }
+    for name, record in records.items():
+        record.save(tmp_path / f"{name}.h5")
+
     # A fresh interpreter, as in an environment without mrh or Qiskit installed.
     code = f"""
 import sys
-import numpy as np
 import lassqd
-import lassqd._hdf5
-from lassqd.records import LASState
+from lassqd import records
 
-state = LASState(np.eye(2), [np.zeros((2, 1, 1))], [np.zeros((1, 1, 1, 1))])
-state.save({str(tmp_path / "state.h5")!r})
-LASState.load({str(tmp_path / "state.h5")!r})
+for name in {list(records)!r}:
+    getattr(records, name).load({str(tmp_path)!r} + f"/{{name}}.h5")
 loaded = sorted(m for m in {HEAVY!r} if m in sys.modules)
 assert not loaded, loaded
 """

@@ -41,9 +41,8 @@ def check_header(group: h5py.Group, record: str, version: int) -> None:
     """Raise ValueError unless ``group`` holds ``record`` at ``version``."""
     found = group.attrs.get("record")
     if found != record:
-        raise ValueError(
-            f"{group.file.filename}: expected a {record} record, found {found!r}"
-        )
+        what = "no record type" if found is None else f"a {found} record"
+        raise ValueError(f"{group.file.filename}: expected {record}, found {what}")
     found_version = group.attrs.get("format_version")
     if found_version != version:
         raise ValueError(

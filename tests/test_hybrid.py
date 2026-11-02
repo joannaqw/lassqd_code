@@ -1,5 +1,3 @@
-import copy
-import pickle
 from unittest.mock import patch
 
 import numpy as np
@@ -22,9 +20,11 @@ import lassqd.las
 from lassqd import (
     Embedding,
     FragmentResult,
+    FragmentSamples,
     FragmentSQD,
     LASSCFNoSymm,
     LASState,
+    SQDState,
     build_circuits,
     capture_embedding,
     collect_samples,
@@ -227,29 +227,45 @@ def test_replay_uses_only_the_fragment_rdms(h6):
         assert np.array_equal(a, b)
 
 
-def test_saved_samples_resolve_identically_in_a_new_las(h6):
+def test_saved_records_resume_identically_in_a_new_las(h6, tmp_path):
     mf, las, mo = h6
     solvers = make_solvers(las)
     # One cycle first, so the solvers have carryover and orbital state.
     _, first = cycle_by_stages(las, initial_state(las, mo), solvers)
+    first.state.save(tmp_path / "state.h5")
     samples = sample(las, first.state)
-    saved_samples, saved_solvers = pickle.dumps(samples), copy.deepcopy(solvers)
-    results = solve_fragments(samples, solvers)
-    step = update_orbitals(las, samples.embedding, results)
-    # Resume after a failure: a new LAS object, the saved samples and solver state.
-    samples = pickle.loads(saved_samples)
+    samples.save(tmp_path / "samples.h5")
+    for i, solver in enumerate(solvers):
+        solver.state.save(tmp_path / f"sqd_state_{i}.h5")
+    step = update_orbitals(las, samples.embedding, solve_fragments(samples, solvers))
+
+    # Resume after a failure: a new LAS object and the saved records.
+    las = h6_las(mf)
+    state = LASState.load(tmp_path / "state.h5")
+    samples = FragmentSamples.load(tmp_path / "samples.h5")
+    assert [f.digest() for f in capture_embedding(las, state).fragments] == [
+        f.digest() for f in samples.embedding.fragments
+    ]
+    resumed_solvers = make_solvers(las)
+    for i, solver in enumerate(resumed_solvers):
+        solver.state = SQDState.load(tmp_path / f"sqd_state_{i}.h5")
     resumed = update_orbitals(
-        h6_las(mf), samples.embedding, solve_fragments(samples, saved_solvers)
+        las, samples.embedding, solve_fragments(samples, resumed_solvers)
     )
-    assert np.isclose(resumed.e_tot, step.e_tot, rtol=0, atol=1e-10)
-    np.testing.assert_allclose(
-        resumed.state.mo_coeff, step.state.mo_coeff, rtol=0, atol=1e-8
-    )
-    for solver, saved in zip(solvers, saved_solvers):
-        for strings, saved_strings in zip(
-            solver.state.carryover_strings, saved.state.carryover_strings
+
+    assert resumed.e_tot == step.e_tot
+    assert np.array_equal(resumed.state.mo_coeff, step.state.mo_coeff)
+    for a, b in zip(
+        resumed.state.casdm1frs + resumed.state.casdm2fr,
+        step.state.casdm1frs + step.state.casdm2fr,
+    ):
+        assert np.array_equal(a, b)
+    for resumed_solver, solver in zip(resumed_solvers, solvers):
+        assert resumed_solver.state.rng_state == solver.state.rng_state
+        for a, b in zip(
+            resumed_solver.state.carryover_strings, solver.state.carryover_strings
         ):
-            np.testing.assert_array_equal(strings, saved_strings)
+            assert np.array_equal(a, b)
 
 
 def test_update_orbitals_checks_results(h6):
