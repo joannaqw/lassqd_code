@@ -260,6 +260,10 @@ def test_fragment_rohf_is_the_solution_in_the_sampling_basis(embedding):
             mf = fragment.rohf()
         assert np.array_equal(mf.mo_coeff, np.eye(fragment.norb))
         assert np.array_equal(mf.mo_occ, fragment.mo_occ)
+        for name in ("mo_ea", "mo_eb"):
+            assert np.array_equal(
+                getattr(mf.mo_energy, name), getattr(reference.mo_energy, name)
+            )
         assert np.isclose(mf.e_tot, reference.e_tot, rtol=0, atol=1e-12)
         # CCSD in the sampling basis matches CCSD on the original ROHF solution.
         ccsd, ccsd_ref = cc.CCSD(mf), cc.CCSD(reference)

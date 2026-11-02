@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-from pyscf import gto
+from pyscf import gto, lib
 
 from lassqd.records import from_mo, to_mo
 
@@ -51,8 +51,9 @@ def sampling_basis_rohf(fragment: Fragment) -> ROHF:
     """The fragment's ROHF solution in its sampling basis, without solving again.
 
     The orbitals are the identity, with the stored occupations and orbital
-    energies, and the integrals are ``fragment.h1`` and ``fragment.h2``. Use it
-    to start correlated calculations, such as CCSD, in the sampling basis.
+    energies, including the alpha and beta energies, and the integrals are
+    ``fragment.h1`` and ``fragment.h2``. Use it to start correlated
+    calculations, such as CCSD, in the sampling basis.
 
     Args:
         fragment: The fragment.
@@ -65,7 +66,11 @@ def sampling_basis_rohf(fragment: Fragment) -> ROHF:
     mf = _model_rohf(h1, h2, fragment.norb, fragment.nelec)
     mf.mo_coeff = np.eye(fragment.norb)
     mf.mo_occ = np.array(fragment.mo_occ)
-    mf.mo_energy = np.array(fragment.mo_energy)
+    mf.mo_energy = lib.tag_array(
+        np.array(fragment.mo_energy),
+        mo_ea=np.array(fragment.mo_ea),
+        mo_eb=np.array(fragment.mo_eb),
+    )
     mf.converged = fragment.rohf_converged
     mf.e_tot = mf.energy_tot(mf.make_rdm1())
     return mf

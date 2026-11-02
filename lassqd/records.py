@@ -186,6 +186,8 @@ class Fragment(_Record):
         basis: ROHF orbital coefficients in the LAS basis, shape ``(norb, norb)``.
         mo_occ: ROHF occupations.
         mo_energy: ROHF orbital energies.
+        mo_ea: ROHF alpha orbital energies.
+        mo_eb: ROHF beta orbital energies.
         rohf_converged: Whether the fragment ROHF calculation converged.
         h1: Alpha one-electron integrals in the sampling basis. Circuits and SQD
             use only the alpha integrals, also for a spin-dependent embedding.
@@ -202,6 +204,8 @@ class Fragment(_Record):
     basis: np.ndarray
     mo_occ: np.ndarray
     mo_energy: np.ndarray
+    mo_ea: np.ndarray
+    mo_eb: np.ndarray
     rohf_converged: bool
     h1: np.ndarray
     h2: np.ndarray
@@ -278,6 +282,8 @@ class Fragment(_Record):
             basis=mf.mo_coeff,
             mo_occ=mf.mo_occ,
             mo_energy=mf.mo_energy,
+            mo_ea=mf.mo_energy.mo_ea,
+            mo_eb=mf.mo_energy.mo_eb,
             rohf_converged=mf.converged,
             h1=h1,
             h2=h2_mo,
@@ -325,6 +331,8 @@ class Fragment(_Record):
         "basis",
         "mo_occ",
         "mo_energy",
+        "mo_ea",
+        "mo_eb",
         "h1",
         "h2",
     )
