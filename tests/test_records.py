@@ -243,3 +243,25 @@ def test_load_checks_the_record_type(tmp_path, embedding):
     embedding.state.save(tmp_path / "state.h5")
     with pytest.raises(ValueError, match="expected Embedding, found a LASState record"):
         Embedding.load(tmp_path / "state.h5")
+
+
+def test_fragment_rohf_is_the_solution_in_the_sampling_basis(embedding):
+    from unittest.mock import patch
+
+    from pyscf import cc
+    from pyscf.scf.rohf import ROHF
+
+    for fragment in embedding.fragments:
+        args = (fragment.h1s_las[0], fragment.h2_las, fragment.norb, fragment.nelec)
+        reference = fragment_rohf(*args)
+        with patch.object(ROHF, "kernel", side_effect=AssertionError("solved again")):
+            mf = fragment.rohf()
+        assert np.array_equal(mf.mo_coeff, np.eye(fragment.norb))
+        assert np.array_equal(mf.mo_occ, fragment.mo_occ)
+        assert np.isclose(mf.e_tot, reference.e_tot, rtol=0, atol=1e-12)
+        # CCSD in the sampling basis matches CCSD on the original ROHF solution.
+        ccsd, ccsd_ref = cc.CCSD(mf), cc.CCSD(reference)
+        ccsd.verbose = ccsd_ref.verbose = 0
+        ccsd.kernel()
+        ccsd_ref.kernel()
+        assert np.isclose(ccsd.e_corr, ccsd_ref.e_corr, rtol=0, atol=1e-10)

@@ -147,7 +147,7 @@ solved outside mrh and independently of each other.
 | [lassqd.circuits](lassqd/circuits.py) | `build_circuits`, `submit_circuits`, `collect_samples` |
 | [lassqd.sqd](lassqd/sqd.py) | `FragmentSQD`: configuration recovery, carryover and the fragment solve |
 | [lassqd.hybrid](lassqd/hybrid.py) | `solve_fragments`, `update_orbitals`, and the serial driver `run_lassqd` |
-| [lassqd.fragment](lassqd/fragment.py) | `fragment_rohf`: the fragment ROHF basis |
+| [lassqd.fragment](lassqd/fragment.py) | `fragment_rohf` and `sampling_basis_rohf`: the fragment ROHF basis |
 | [lassqd.pdft](lassqd/pdft.py) | `lassqd_pdft_energy`: LAS-PDFT on a LAS state |
 
 `lassqd.records` imports only NumPy and h5py, so stored records can be read
@@ -203,7 +203,8 @@ circuit with `2 * fragment.norb` qubits. It prepares a state in the fragment's
 sampling basis, its ROHF orbitals, whose integrals are `fragment.h1` and
 `fragment.h2` (chemists' notation). Alpha orbitals occupy qubits `0..norb-1` and
 beta orbitals `norb..2*norb-1`. There is no default ansatz; the examples use
-CCSD-initialized LUCJ circuits.
+CCSD-initialized LUCJ circuits, starting CCSD from `fragment.rohf()`, the ROHF
+solution in the sampling basis as a PySCF object.
 
 `groups` lists the fragments of each circuit. A group of several fragments is
 glued into one circuit with one classical register per fragment; `None`, the

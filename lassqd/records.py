@@ -273,6 +273,16 @@ class Fragment(_Record):
             h2=h2_mo,
         )
 
+    def rohf(self):
+        """The ROHF solution in the sampling basis, as a PySCF object.
+
+        See :func:`lassqd.fragment.sampling_basis_rohf`; for example,
+        ``pyscf.cc.CCSD(fragment.rohf())`` runs CCSD in the sampling basis.
+        """
+        from lassqd.fragment import sampling_basis_rohf
+
+        return sampling_basis_rohf(self)
+
     @property
     def sampling_orbitals(self) -> np.ndarray:
         """The sampling-basis orbitals in the AO basis, shape ``(nao, norb)``."""

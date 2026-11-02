@@ -16,10 +16,12 @@ from pyscf import gto
 
 from lassqd.records import from_mo, to_mo
 
-__all__ = ["fragment_rohf", "from_mo", "to_mo"]
+__all__ = ["fragment_rohf", "from_mo", "sampling_basis_rohf", "to_mo"]
 
 if TYPE_CHECKING:
     from pyscf.scf.rohf import ROHF
+
+    from lassqd.records import Fragment
 
 
 def fragment_rohf(
@@ -39,6 +41,39 @@ def fragment_rohf(
     Returns:
         The converged ROHF object; its ``mo_coeff`` are the fragment orbitals.
     """
+    mf = _model_rohf(h1, h2, norb, nelec)
+    mf.kernel()
+    return mf
+
+
+def sampling_basis_rohf(fragment: Fragment) -> ROHF:
+    """The fragment's ROHF solution in its sampling basis, without solving again.
+
+    The orbitals are the identity, with the stored occupations and orbital
+    energies, and the integrals are ``fragment.h1`` and ``fragment.h2``. Use it
+    to start correlated calculations, such as CCSD, in the sampling basis.
+
+    Args:
+        fragment: The fragment.
+
+    Returns:
+        An ROHF object whose ``mo_coeff`` is the identity.
+    """
+    # Writable copies of the read-only record arrays, for PySCF and its users.
+    h1, h2 = np.array(fragment.h1), np.array(fragment.h2)
+    mf = _model_rohf(h1, h2, fragment.norb, fragment.nelec)
+    mf.mo_coeff = np.eye(fragment.norb)
+    mf.mo_occ = np.array(fragment.mo_occ)
+    mf.mo_energy = np.array(fragment.mo_energy)
+    mf.converged = fragment.rohf_converged
+    mf.e_tot = mf.energy_tot(mf.make_rdm1())
+    return mf
+
+
+def _model_rohf(
+    h1: np.ndarray, h2: np.ndarray, norb: int, nelec: tuple[int, int]
+) -> ROHF:
+    """An unsolved ROHF object for ``(h1, h2)`` on a fake molecule."""
     neleca, nelecb = nelec
     mol = gto.M(verbose=0)
     mol.nelectron = neleca + nelecb
@@ -48,5 +83,4 @@ def fragment_rohf(
     mf.get_hcore = lambda *args: h1
     mf.get_ovlp = lambda *args: np.eye(norb)
     mf._eri = h2
-    mf.kernel()
     return mf

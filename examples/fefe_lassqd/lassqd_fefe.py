@@ -22,14 +22,12 @@ from lassqd import (
     initial_state,
     run_lassqd,
 )
-from lassqd.fragment import fragment_rohf
 
 
 def prepare_fragment(fragment: Fragment) -> QuantumCircuit:
     """Prepare this example's CCSD-initialized LUCJ state in the sampling basis."""
     norb, nelec = fragment.norb, fragment.nelec
-    mf_mo = fragment_rohf(fragment.h1, fragment.h2, norb, nelec)
-    ccsd = cc.CCSD(mf_mo)
+    ccsd = cc.CCSD(fragment.rohf())
     ccsd.verbose = 0
     ccsd.kernel()
 
