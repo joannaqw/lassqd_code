@@ -275,7 +275,7 @@ def test_update_orbitals_checks_results(h6):
     samples = sample(las, initial_state(las, mo))
     embedding = samples.embedding
     results = solve_fragments(samples, make_solvers(las))
-    with pytest.raises(ValueError, match="results for"):
+    with pytest.raises(ValueError, match="shorter"):
         update_orbitals(las, embedding, results[:1])
     swapped = [perturbed(results[0], fragment_digest=results[1].fragment_digest)]
     with pytest.raises(ValueError, match="different fragment problem"):

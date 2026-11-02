@@ -107,7 +107,7 @@ def solve_fragments(
     return [
         solver.solve(fragment, counts, ao_ovlp=embedding.ao_ovlp)
         for solver, fragment, counts in zip(
-            solvers, embedding.fragments, samples.counts, strict=True
+            solvers, embedding.fragments, samples.counts
         )
     ]
 
@@ -129,12 +129,9 @@ def update_orbitals(
         The energy and LAS state after the step.
 
     Raises:
-        ValueError: If a result was solved for a different fragment problem.
+        ValueError: If the number of results differs from the number of
+            fragments, or a result was solved for a different fragment problem.
     """
-    if len(results) != len(embedding.fragments):
-        raise ValueError(
-            f"{len(results)} results for {len(embedding.fragments)} fragments"
-        )
     for fragment, result in zip(embedding.fragments, results, strict=True):
         if result.fragment_digest != fragment.digest():
             raise ValueError(
