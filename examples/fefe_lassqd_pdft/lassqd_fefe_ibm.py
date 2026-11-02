@@ -2,12 +2,17 @@
 followed by an SQD-PDFT (tPBE) energy.
 
 Save an IBM Quantum account first (``QiskitRuntimeService.save_account(...)``).
-Each cycle writes the current LAS wave function (orbitals + fragment RDMs) to
-``RDMS/casdm.h5`` as a :class:`lassqd.LASState`, which ``pdft_from_rdms.py`` can
-reuse, and each fragment's solver state to ``RDMS/sqd_state{i}.h5``. A later run
-continues from these files when they exist.
+Each cycle writes a checkpoint, the current LAS wave function (orbitals +
+fragment RDMs) as ``casdm.h5``, a :class:`lassqd.LASState` that
+``pdft_from_rdms.py`` can reuse, and each fragment's solver state as
+``sqd_state{i}.h5``. The files go into a new directory under ``RDMS/``, and the
+symlink ``RDMS/latest`` is then switched to it in one step, so ``RDMS/latest``
+always holds one whole checkpoint. A later run continues from it when it exists.
 """
 
+import os
+import shutil
+import tempfile
 from functools import partial
 from pathlib import Path
 
@@ -94,21 +99,33 @@ pass_manager = generate_preset_pass_manager(
 pass_manager.pre_init = ffsim.qiskit.PRE_INIT
 
 
-checkpoint = Path("RDMS")
+checkpoints = Path("RDMS")
+latest = checkpoints / "latest"
 
 
 def save_checkpoint(cycle: int, step: CycleResult) -> None:
-    checkpoint.mkdir(exist_ok=True)
-    step.state.save(checkpoint / "casdm.h5")
+    """Write the whole checkpoint, then point ``RDMS/latest`` at it."""
+    checkpoints.mkdir(exist_ok=True)
+    new = Path(tempfile.mkdtemp(prefix="checkpoint-", dir=checkpoints))
+    step.state.save(new / "casdm.h5")
     for ifrag, solver in enumerate(solvers):
-        solver.state.save(checkpoint / f"sqd_state{ifrag}.h5")
+        solver.state.save(new / f"sqd_state{ifrag}.h5")
+    previous = latest.resolve() if latest.exists() else None
+    link = checkpoints / "latest.new"
+    link.unlink(missing_ok=True)
+    link.symlink_to(new.name)
+    # Renaming the link replaces RDMS/latest atomically: a crash before this
+    # leaves the previous checkpoint in place.
+    os.replace(link, latest)
+    if previous is not None:
+        shutil.rmtree(previous)
 
 
 # Continue from a previous run's checkpoint if there is one.
-if (checkpoint / "casdm.h5").exists():
-    state = LASState.load(checkpoint / "casdm.h5")
+if latest.exists():
+    state = LASState.load(latest / "casdm.h5")
     for ifrag, solver in enumerate(solvers):
-        solver.state = SQDState.load(checkpoint / f"sqd_state{ifrag}.h5")
+        solver.state = SQDState.load(latest / f"sqd_state{ifrag}.h5")
 else:
     state = initial_state(las, mo_localized)
 with Session(backend=backend) as session:

@@ -49,10 +49,12 @@ running. Install the `ibm` extra and save an IBM Quantum account with
 `QiskitRuntimeService.save_account(...)` first.
 
 The script runs **one hybrid cycle** (`max_cycles=1`) per invocation; increase
-`max_cycles` to allow convergence over multiple cycles. Each cycle writes the LAS
-wave function to `RDMS/casdm.h5` and each fragment's solver state to
-`RDMS/sqd_state{0,1}.h5`. When `RDMS/casdm.h5` exists, the next run continues
-from these files; otherwise it starts from the localized AVAS guess.
+`max_cycles` to allow convergence over multiple cycles. Each cycle writes a
+checkpoint, the LAS wave function as `casdm.h5` and each fragment's solver state
+as `sqd_state{0,1}.h5`, into a new directory under `RDMS/`, and then switches the
+symlink `RDMS/latest` to it, so an interrupted write never replaces the last
+whole checkpoint. When `RDMS/latest` exists, the next run continues from it;
+otherwise it starts from the localized AVAS guess.
 Its `sci_solver` is the addon's `solve_sci_batch`, configured with a triplet spin
 target (`spin_sq=2`), 200 maximum Davidson cycles and `1e-12` tolerance.
 
