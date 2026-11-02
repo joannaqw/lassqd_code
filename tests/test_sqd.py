@@ -12,14 +12,14 @@ from qiskit_addon_sqd.fermion import (
     solve_sci_batch,
 )
 
-from lassqd import FragmentSQD, fragment_hamiltonians
+from lassqd import FragmentSQD, fragment_hamiltonians, initial_state
 from lassqd.sqd import permute_carryover
 
 
 @pytest.fixture
 def fragment(h6):
     _, las, mo = h6
-    h0, h1s, h2 = fragment_hamiltonians(las, mo)[0]
+    h0, h1s, h2 = fragment_hamiltonians(las, initial_state(las, mo))[0]
     return las.ncas_sub[0], las.nelecas_sub[0], h0, h1s, h2
 
 

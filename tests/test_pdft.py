@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from mrh.my_pyscf.mcscf.lasscf_o0 import LASSCF
 
-from lassqd import lassqd_pdft_energy, load_rdms, save_rdms
+from lassqd import LASState, lassqd_pdft_energy
 from lassqd.pdft import make_casdm1s, make_casdm2
 
 
@@ -30,22 +30,8 @@ def test_pdft_energy_matches_las_pdft(ci_las):
     e_tot_ref, e_ot_ref, e_states_ref = get_mcpdft_child_class(
         las, ot="tPBE"
     ).compute_pdft_energy_()
-    e_tot, e_ot, e_states = lassqd_pdft_energy(las, casdm1frs, casdm2fr, las.mo_coeff)
+    state = LASState(las.mo_coeff, casdm1frs, casdm2fr)
+    e_tot, e_ot, e_states = lassqd_pdft_energy(las, state)
     assert np.isclose(e_tot, e_tot_ref)
     assert np.isclose(e_ot, e_ot_ref)
     assert np.allclose(e_states, e_states_ref)
-
-
-def test_save_load_round_trip(tmp_path, ci_las):
-    las, casdm1frs, casdm2fr = ci_las
-    save_rdms(tmp_path / "rdms.h5", casdm1frs, casdm2fr, mo_coeff=las.mo_coeff)
-    dm1, dm2, mo = load_rdms(tmp_path / "rdms.h5")
-    assert all(np.array_equal(a, b) for a, b in zip(dm1, casdm1frs))
-    assert all(np.array_equal(a, b) for a, b in zip(dm2, casdm2fr))
-    assert np.array_equal(mo, las.mo_coeff)
-
-    # Unbatched RDMs are stored with a leading root axis; orbitals are optional.
-    save_rdms(tmp_path / "bare.h5", [d[0] for d in casdm1frs], [d[0] for d in casdm2fr])
-    dm1, _, mo = load_rdms(tmp_path / "bare.h5")
-    assert dm1[0].shape == casdm1frs[0].shape
-    assert mo is None

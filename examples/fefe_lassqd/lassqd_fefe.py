@@ -14,7 +14,7 @@ from pyscf.mcscf import avas
 from qiskit import QuantumCircuit
 from qiskit_addon_sqd.fermion import SCIResult, SCIState
 
-from lassqd import FragmentSQD, LASSCFNoSymm, run_lassqd
+from lassqd import CycleResult, FragmentSQD, LASSCFNoSymm, initial_state, run_lassqd
 from lassqd.basis import fragment_mo_basis, fragment_rohf
 
 
@@ -123,7 +123,7 @@ def record_iteration(history: dict[str, list], results: list[SCIResult]) -> None
 
 def save_cycle(
     cycle: int,
-    las: LASSCFNoSymm,
+    step: CycleResult,
     *,
     solvers: Sequence[FragmentSQD],
     histories: Sequence[dict[str, list]],
@@ -136,7 +136,7 @@ def save_cycle(
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    np.save(output_dir / "current_orb", las.mo_coeff)
+    np.save(output_dir / "current_orb", step.state.mo_coeff)
     for ifrag, (solver, history) in enumerate(zip(solvers, histories)):
         directory = output_dir / f"data_carryover_frag{ifrag}"
         directory.mkdir(exist_ok=True)
@@ -180,7 +180,7 @@ solvers = [
 
 result = run_lassqd(
     las,
-    mo_localized,
+    initial_state(las, mo_localized),
     solvers,
     ffsim.qiskit.FfsimSampler(),
     circuit_builder=prepare_fragment,

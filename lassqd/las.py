@@ -11,9 +11,20 @@ Each hybrid cycle runs LASSCF twice at the same orbitals:
 from collections.abc import Callable, Sequence
 
 import numpy as np
-from mrh.my_pyscf.mcscf.lasscf_rdm import LASSCFNoSymm, make_fcibox
+from mrh.my_pyscf.mcscf.lasscf_rdm import (
+    LASSCFNoSymm,
+    get_init_guess_rdm,
+    make_fcibox,
+)
 
-__all__ = ["LASSCFNoSymm", "fragment_hamiltonians", "set_fragment_kernels"]
+from lassqd.records import LASState
+
+__all__ = [
+    "LASSCFNoSymm",
+    "fragment_hamiltonians",
+    "initial_state",
+    "set_fragment_kernels",
+]
 
 # ``kernel(norb, nelec, h0, h1s, h2) -> (e, dm1s, dm2)``, e.g. :class:`lassqd.sqd.FragmentSQD`.
 FragmentKernel = Callable[
@@ -48,15 +59,32 @@ def set_fragment_kernels(las: LASSCFNoSymm, kernels: Sequence[FragmentKernel]) -
     ]
 
 
+def initial_state(las: LASSCFNoSymm, mo_coeff: np.ndarray) -> LASState:
+    """mrh's initial-guess fragment RDMs at ``mo_coeff``, as a :class:`LASState`.
+
+    These are the RDMs ``las.kernel`` starts from when it is given none.
+
+    Args:
+        las: RDM-based LASSCF object.
+        mo_coeff: Molecular orbital coefficients.
+
+    Returns:
+        The orbitals with the initial-guess RDMs in their active space.
+    """
+    casdm1frs, casdm2fr = get_init_guess_rdm(las, mo_coeff, las.get_h2eff(mo_coeff))
+    return LASState(
+        mo_coeff,
+        tuple(np.stack(dm1rs) for dm1rs in casdm1frs),
+        tuple(np.stack(dm2r) for dm2r in casdm2fr),
+    )
+
+
 class _HamiltoniansCaptured(Exception):
     pass
 
 
 def fragment_hamiltonians(
-    las: LASSCFNoSymm,
-    mo_coeff: np.ndarray,
-    casdm1frs: Sequence[np.ndarray] | None = None,
-    casdm2fr: Sequence[np.ndarray] | None = None,
+    las: LASSCFNoSymm, state: LASState
 ) -> list[tuple[float, np.ndarray, np.ndarray]]:
     """Collect the Hamiltonians ``las.kernel`` would pass to each fragment kernel.
 
@@ -66,10 +94,8 @@ def fragment_hamiltonians(
 
     Args:
         las: RDM-based LASSCF object.
-        mo_coeff: Molecular orbital coefficients to evaluate the Hamiltonians at.
-        casdm1frs: Fragment 1-RDMs to start from, which set each fragment's
-            embedding in the others; None uses mrh's initial guess.
-        casdm2fr: Fragment 2-RDMs to start from, matching ``casdm1frs``.
+        state: Orbitals to evaluate the Hamiltonians at, and the fragment RDMs
+            that set each fragment's embedding in the others.
 
     Returns:
         ``[(h0, h1s, h2), ...]`` in fragment order, with the argument shapes
@@ -78,6 +104,18 @@ def fragment_hamiltonians(
     Raises:
         RuntimeError: If ``las.kernel`` returns without visiting every fragment.
     """
+    return _capture_hamiltonians(
+        las, state.mo_coeff, list(state.casdm1frs), list(state.casdm2fr)
+    )
+
+
+def _capture_hamiltonians(
+    las: LASSCFNoSymm,
+    mo_coeff: np.ndarray,
+    casdm1frs: Sequence[np.ndarray] | None,
+    casdm2fr: Sequence[np.ndarray] | None,
+) -> list[tuple[float, np.ndarray, np.ndarray]]:
+    """:func:`fragment_hamiltonians` from loose arrays; None RDMs use mrh's guess."""
     hams = [None] * las.nfrags
 
     def capture(ifrag):

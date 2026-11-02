@@ -1,9 +1,8 @@
 """SQD-PDFT (tPBE) energy of a saved LASSQD wave function (``RDMS/casdm.h5``)."""
 
-import numpy as np
 from pyscf import gto, lib, scf
 
-from lassqd import LASSCFNoSymm, lassqd_pdft_energy, load_rdms
+from lassqd import LASSCFNoSymm, LASState, lassqd_pdft_energy
 
 lib.logger.TIMER_LEVEL = lib.logger.INFO
 basis = {"Fe": "6-31g", "C": "6-31g", "H": "6-31g", "O": "6-31g", "N": "6-31g"}
@@ -14,9 +13,6 @@ mf = mf.density_fit()
 mf.kernel()
 las = LASSCFNoSymm(mf, (5, 5), ((4, 2), (2, 4)), spin_sub=(3, 3))
 
-casdm1frs, casdm2fr, mo_coeff = load_rdms("RDMS/casdm.h5")
-if mo_coeff is None:
-    # Files written before the orbitals were stored alongside the RDMs.
-    mo_coeff = np.load("current_orb.npy")
-e_pdft, _, _ = lassqd_pdft_energy(las, casdm1frs, casdm2fr, mo_coeff, ot="tPBE")
+state = LASState.load("RDMS/casdm.h5")
+e_pdft, _, _ = lassqd_pdft_energy(las, state, ot="tPBE")
 print("SQDPDFT energy", e_pdft)

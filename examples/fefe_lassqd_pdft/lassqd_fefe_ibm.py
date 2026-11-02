@@ -3,7 +3,8 @@ followed by an SQD-PDFT (tPBE) energy.
 
 Save an IBM Quantum account first (``QiskitRuntimeService.save_account(...)``).
 Each cycle writes the current LAS wave function (orbitals + fragment RDMs) to
-``RDMS/casdm.h5``, which ``pdft_from_rdms.py`` can reuse.
+``RDMS/casdm.h5`` as a :class:`lassqd.LASState`, which ``pdft_from_rdms.py`` can
+reuse.
 """
 
 from functools import partial
@@ -19,11 +20,12 @@ from qiskit_addon_sqd.fermion import solve_sci_batch
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2, Session
 
 from lassqd import (
+    CycleResult,
     FragmentSQD,
     LASSCFNoSymm,
+    initial_state,
     lassqd_pdft_energy,
     run_lassqd,
-    save_rdms,
 )
 from lassqd.basis import fragment_mo_basis, fragment_rohf
 
@@ -95,14 +97,14 @@ pass_manager = generate_preset_pass_manager(
 pass_manager.pre_init = ffsim.qiskit.PRE_INIT
 
 
-def save_wave_function(cycle: int, las: LASSCFNoSymm) -> None:
-    np.save("current_orb", las.mo_coeff)
+def save_wave_function(cycle: int, step: CycleResult) -> None:
+    np.save("current_orb", step.state.mo_coeff)
     Path("RDMS").mkdir(exist_ok=True)
-    save_rdms("RDMS/casdm.h5", las.casdm1frs, las.casdm2fr, mo_coeff=las.mo_coeff)
+    step.state.save("RDMS/casdm.h5")
 
 
 # Restart from the orbitals of a previous run; use mo_localized to start fresh.
-mo_init = np.load("current_orb.npy")
+state = initial_state(las, np.load("current_orb.npy"))
 with Session(backend=backend) as session:
     sampler = SamplerV2(mode=session)
     sampler.options.max_execution_time = 10800
@@ -112,7 +114,7 @@ with Session(backend=backend) as session:
     sampler.options.twirling.enable_measure = True
     result = run_lassqd(
         las,
-        mo_init,
+        state,
         solvers,
         sampler,
         circuit_builder=prepare_fragment,
@@ -121,7 +123,5 @@ with Session(backend=backend) as session:
         max_cycles=1,
         callback=save_wave_function,
     )
-e_pdft, _, _ = lassqd_pdft_energy(
-    las, result.casdm1frs, result.casdm2fr, result.mo_coeff, ot="tPBE"
-)
+e_pdft, _, _ = lassqd_pdft_energy(las, result.state, ot="tPBE")
 print("SQDPDFT energy", e_pdft)
