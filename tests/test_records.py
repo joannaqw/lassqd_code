@@ -265,3 +265,21 @@ def test_fragment_rohf_is_the_solution_in_the_sampling_basis(embedding):
         ccsd.kernel()
         ccsd_ref.kernel()
         assert np.isclose(ccsd.e_corr, ccsd_ref.e_corr, rtol=0, atol=1e-10)
+
+
+def test_unconverged_rohf_raises(embedding):
+    from unittest.mock import patch
+
+    def unconverged(*args):
+        mf = fragment_rohf(*args)
+        mf.converged = False
+        return mf
+
+    ref = embedding.fragments[1]
+    with (
+        patch("lassqd.fragment.fragment_rohf", unconverged),
+        pytest.raises(RuntimeError, match="fragment 1"),
+    ):
+        Fragment.from_hamiltonian(
+            ref.norb, ref.nelec, ref.h0, ref.h1s_las, ref.h2_las, index=1
+        )

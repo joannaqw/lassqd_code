@@ -185,7 +185,8 @@ class Fragment(_Record):
         basis: ROHF orbital coefficients in the LAS basis, shape ``(norb, norb)``.
         mo_occ: ROHF occupations.
         mo_energy: ROHF orbital energies.
-        rohf_converged: Whether the ROHF calculation converged.
+        rohf_converged: Whether the ROHF calculation converged; always true for
+            fragments from :meth:`from_hamiltonian`, which raises otherwise.
         h1: Alpha one-electron integrals in the sampling basis. Circuits and SQD
             use only the alpha integrals, also for a spin-dependent embedding.
         h2: Two-electron integrals in the sampling basis.
@@ -247,6 +248,10 @@ class Fragment(_Record):
 
         Returns:
             The fragment, with ROHF run once on the alpha Hamiltonian.
+
+        Raises:
+            RuntimeError: If ROHF does not converge, since the sampling basis
+                would then be ill-defined.
         """
         from lassqd.fragment import fragment_rohf
 
@@ -256,6 +261,8 @@ class Fragment(_Record):
         if las_orbitals is None:
             las_orbitals = np.eye(norb)
         mf = fragment_rohf(h1s[0], h2, norb, nelec)
+        if not mf.converged:
+            raise RuntimeError(f"ROHF did not converge for fragment {index}")
         h1, h2_mo = to_mo(mf.mo_coeff, h1s[0], h2)
         return cls(
             index=index,
