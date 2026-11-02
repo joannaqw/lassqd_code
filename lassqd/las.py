@@ -176,7 +176,8 @@ def fragment_hamiltonians(
 
     The upstream kernel is run up to its first CI step and then stopped, so these
     are exactly the Hamiltonians :func:`replay_orbital_step` receives at the same
-    state. ``las.fciboxes`` is restored afterwards.
+    state. ``las.fciboxes``, ``las.mo_coeff``, ``las.nroots`` and ``las.weights``,
+    which the kernel sets before its first CI step, are restored afterwards.
 
     Args:
         las: RDM-based LASSCF object.
@@ -218,16 +219,20 @@ def _capture_hamiltonians(
 
         return kernel
 
-    fciboxes = las.fciboxes
+    saved = las.fciboxes, las.mo_coeff, las.nroots, las.weights
     try:
         _set_fragment_kernels(las, [capture(i) for i in range(las.nfrags)])
-        las.kernel(mo_coeff, casdm1frs=casdm1frs, casdm2fr=casdm2fr)
+        las.kernel(
+            np.array(mo_coeff),
+            casdm1frs=_writable(casdm1frs),
+            casdm2fr=_writable(casdm2fr),
+        )
     except _HamiltoniansCaptured:
         pass
     else:
         raise RuntimeError("las.kernel returned without calling every fragment kernel")
     finally:
-        las.fciboxes = fciboxes
+        las.fciboxes, las.mo_coeff, las.nroots, las.weights = saved
     return hams
 
 
@@ -271,7 +276,7 @@ def replay_orbital_step(
             if visits[fragment.index] > 1:
                 raise RuntimeError(f"mrh visited fragment {fragment.index} twice")
             _check_hamiltonian(fragment, norb, nelec, h0, h1s, h2)
-            return result.e_tot, result.dm1s, result.dm2
+            return result.e_tot, np.array(result.dm1s), np.array(result.dm2)
 
         return kernel
 
@@ -281,15 +286,20 @@ def replay_orbital_step(
         las.max_cycle_macro, las.max_cycle_rdmjk = 1, 0
         _set_fragment_kernels(las, [replay(f, r) for f, r in zip(fragments, results)])
         las.kernel(
-            state.mo_coeff,
-            casdm1frs=list(state.casdm1frs),
-            casdm2fr=list(state.casdm2fr),
+            np.array(state.mo_coeff),
+            casdm1frs=_writable(state.casdm1frs),
+            casdm2fr=_writable(state.casdm2fr),
         )
     finally:
         las.fciboxes, las.max_cycle_macro, las.max_cycle_rdmjk = saved
     if visits != [1] * len(fragments):
         raise RuntimeError(f"mrh visited the fragments {visits} times")
     return las.e_tot, LASState(las.mo_coeff, tuple(las.casdm1frs), tuple(las.casdm2fr))
+
+
+def _writable(arrays: Sequence[np.ndarray] | None) -> list[np.ndarray] | None:
+    """Writable copies of read-only record arrays, for mrh to keep or modify."""
+    return None if arrays is None else [np.array(a) for a in arrays]
 
 
 def _check_hamiltonian(fragment, norb, nelec, h0, h1s, h2) -> None:

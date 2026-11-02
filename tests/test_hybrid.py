@@ -308,6 +308,18 @@ def test_replay_restores_las_on_failure(h6, fail_in):
     assert (las.fciboxes, las.max_cycle_macro, las.max_cycle_rdmjk) == saved
 
 
+def test_capture_and_replay_leave_las_writable(h6):
+    _, las, mo = h6
+    las.mo_coeff = before = np.array(mo)
+    samples = sample(las, initial_state(las, mo))
+    # Capturing leaves las at the orbitals it had, not the record's read-only copy.
+    assert las.mo_coeff is before
+    update_orbitals(las, samples.embedding, solve_fragments(samples, make_solvers(las)))
+    assert las.mo_coeff.flags.writeable
+    for dm1s, dm2 in zip(las.casdm1frs, las.casdm2fr):
+        assert dm1s.flags.writeable and dm2.flags.writeable
+
+
 def test_replay_rejects_a_different_hamiltonian(h6):
     _, las, mo = h6
     samples = sample(las, initial_state(las, mo))
