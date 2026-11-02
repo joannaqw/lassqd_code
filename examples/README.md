@@ -59,5 +59,6 @@ Its `sci_solver` is the addon's `solve_sci_batch`, configured with a triplet spi
 target (`spin_sq=2`), 200 maximum Davidson cycles and `1e-12` tolerance.
 
 [pdft_from_rdms.py](fefe_lassqd_pdft/pdft_from_rdms.py) (what `run.slurm` runs): the
-SQD-PDFT energy of the wave function saved in `RDMS/casdm.h5`, without new sampling.
+SQD-PDFT energy of the wave function saved in `RDMS/latest/casdm.h5`, without new
+sampling.
 Run `lassqd_fefe_ibm.py` first to create that file.
