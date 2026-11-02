@@ -24,7 +24,7 @@ if TYPE_CHECKING:
         update_orbitals,
     )
     from lassqd.las import (
-        LASSCFNoSymm,
+        LASSCF,
         capture_embedding,
         fragment_hamiltonians,
         initial_state,
@@ -50,7 +50,7 @@ _EXPORTS = {
     "FragmentSQD": "lassqd.sqd",
     "FragmentSamples": "lassqd.records",
     "HybridResult": "lassqd.hybrid",
-    "LASSCFNoSymm": "lassqd.las",
+    "LASSCF": "lassqd.las",
     "LASState": "lassqd.records",
     "SQDState": "lassqd.records",
     "build_circuits": "lassqd.circuits",
@@ -67,6 +67,7 @@ _EXPORTS = {
 }
 
 __all__ = [
+    "LASSCF",
     "CycleResult",
     "Embedding",
     "Fragment",
@@ -75,7 +76,6 @@ __all__ = [
     "FragmentSQD",
     "FragmentSamples",
     "HybridResult",
-    "LASSCFNoSymm",
     "LASState",
     "SQDState",
     "build_circuits",

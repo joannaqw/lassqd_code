@@ -2,7 +2,7 @@
 
 from pyscf import gto, lib, scf
 
-from lassqd import LASSCFNoSymm, LASState, lassqd_pdft_energy
+from lassqd import LASSCF, LASState, lassqd_pdft_energy
 
 lib.logger.TIMER_LEVEL = lib.logger.INFO
 basis = {"Fe": "6-31g", "C": "6-31g", "H": "6-31g", "O": "6-31g", "N": "6-31g"}
@@ -11,7 +11,7 @@ mf = scf.ROHF(mol)
 mf.init_guess = "atom"
 mf = mf.density_fit()
 mf.kernel()
-las = LASSCFNoSymm(mf, (5, 5), ((4, 2), (2, 4)), spin_sub=(3, 3))
+las = LASSCF(mf, (5, 5), ((4, 2), (2, 4)), spin_sub=(3, 3))
 
 state = LASState.load("RDMS/casdm.h5")
 e_pdft, _, _ = lassqd_pdft_energy(las, state, ot="tPBE")

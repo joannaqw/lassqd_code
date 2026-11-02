@@ -20,10 +20,10 @@ from qiskit_addon_sqd.fermion import solve_sci_batch
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2, Session
 
 from lassqd import (
+    LASSCF,
     CycleResult,
     Fragment,
     FragmentSQD,
-    LASSCFNoSymm,
     LASState,
     SQDState,
     initial_state,
@@ -68,7 +68,7 @@ mf = mf.density_fit()
 mf.kernel()
 ncas, nelecas, guess_mo_coeff = avas.kernel(mf, ["Fe 3d"], minao=mol.basis)
 
-las = LASSCFNoSymm(mf, (5, 5), ((4, 2), (2, 4)), spin_sub=(3, 3))
+las = LASSCF(mf, (5, 5), ((4, 2), (2, 4)), spin_sub=(3, 3))
 guess_mo_sorted = las.sort_mo(list(range(100, 110)), guess_mo_coeff)
 mo_localized = las.localize_init_guess(([0], [1]), guess_mo_sorted)
 

@@ -15,10 +15,10 @@ from qiskit import QuantumCircuit
 from qiskit_addon_sqd.fermion import SCIResult, SCIState
 
 from lassqd import (
+    LASSCF,
     CycleResult,
     Fragment,
     FragmentSQD,
-    LASSCFNoSymm,
     initial_state,
     run_lassqd,
 )
@@ -162,7 +162,7 @@ mf = mf.density_fit()
 mf.kernel()
 ncas, nelecas, guess_mo_coeff = avas.kernel(mf, ["Fe 3d"], minao=mol.basis)
 
-las = LASSCFNoSymm(mf, (10, 10), ((4, 2), (2, 4)), spin_sub=(3, 3))
+las = LASSCF(mf, (10, 10), ((4, 2), (2, 4)), spin_sub=(3, 3))
 guess_mo_sorted = las.sort_mo(list(range(100, 120)), guess_mo_coeff)
 mo_localized = las.localize_init_guess(([0], [1]), guess_mo_sorted)
 

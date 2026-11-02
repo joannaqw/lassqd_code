@@ -13,12 +13,14 @@ RDMs, with kernels that do not solve anything:
    mrh take one orbital step. mrh computes the energy from the RDMs; the
    fragment energies it receives are only logged.
 
-No other module calls mrh.
+Build the LAS object with :func:`LASSCF`. No other module calls mrh.
 """
 
 from collections.abc import Callable, Sequence
 
 import numpy as np
+from mrh.my_pyscf.mcscf import lasscf_rdm
+from mrh.my_pyscf.mcscf.lasci import _DFLASCI
 from mrh.my_pyscf.mcscf.lasscf_rdm import (
     LASSCFNoSymm,
     get_init_guess_rdm,
@@ -28,7 +30,7 @@ from mrh.my_pyscf.mcscf.lasscf_rdm import (
 from lassqd.records import Embedding, Fragment, FragmentResult, LASState
 
 __all__ = [
-    "LASSCFNoSymm",
+    "LASSCF",
     "capture_embedding",
     "fragment_hamiltonians",
     "initial_state",
@@ -71,6 +73,39 @@ def _set_fragment_kernels(las: LASSCFNoSymm, kernels: Sequence[FragmentKernel]) 
     ]
 
 
+def LASSCF(mf_or_mol, ncas_sub, nelecas_sub, **kwargs) -> LASSCFNoSymm:
+    """mrh's RDM-based LASSCF object for a mean field, as LASSQD needs it.
+
+    This is ``mrh.my_pyscf.mcscf.lasscf_rdm.LASSCF``: if ``mf`` uses density
+    fitting, the LAS object does too, so that its active-space integrals and its
+    potentials are computed the same way. Constructing ``LASSCFNoSymm`` directly
+    from a density-fitted mean field mixes exact and density-fitted integrals;
+    the functions in this module reject such objects.
+
+    Args:
+        mf_or_mol: PySCF mean-field object, or a molecule for an RHF reference.
+        ncas_sub: Number of active orbitals in each fragment.
+        nelecas_sub: ``(neleca, nelecb)`` of each fragment.
+        **kwargs: Passed to mrh, for example ``spin_sub``, each fragment's spin
+            multiplicity.
+
+    Returns:
+        The LASSCF object.
+    """
+    return lasscf_rdm.LASSCF(mf_or_mol, ncas_sub, nelecas_sub, **kwargs)
+
+
+def _check_density_fitting(las: LASSCFNoSymm) -> None:
+    """Raise unless ``las`` and its mean field treat the integrals the same way."""
+    if getattr(las._scf, "with_df", None) and not isinstance(las, _DFLASCI):
+        raise ValueError(
+            "the mean field uses density fitting but the LAS object does not, "
+            "which mixes exact active-space integrals with density-fitted "
+            "potentials; build it with lassqd.LASSCF(mf, ...) or apply "
+            "mrh.my_pyscf.mcscf.lasci.density_fit"
+        )
+
+
 def initial_state(las: LASSCFNoSymm, mo_coeff: np.ndarray) -> LASState:
     """mrh's initial-guess fragment RDMs at ``mo_coeff``, as a :class:`LASState`.
 
@@ -82,7 +117,12 @@ def initial_state(las: LASSCFNoSymm, mo_coeff: np.ndarray) -> LASState:
 
     Returns:
         The orbitals with the initial-guess RDMs in their active space.
+
+    Raises:
+        ValueError: If ``las`` was built without the density fitting its mean
+            field uses; see :func:`LASSCF`.
     """
+    _check_density_fitting(las)
     casdm1frs, casdm2fr = get_init_guess_rdm(las, mo_coeff, las.get_h2eff(mo_coeff))
     return LASState(
         mo_coeff,
@@ -101,6 +141,10 @@ def capture_embedding(las: LASSCFNoSymm, state: LASState) -> Embedding:
 
     Returns:
         The fragments of ``state``, each with its LAS orbitals and ROHF basis.
+
+    Raises:
+        ValueError: If ``las`` was built without the density fitting its mean
+            field uses; see :func:`LASSCF`.
     """
     hamiltonians = fragment_hamiltonians(las, state)
     bounds = las.ncore + np.cumsum([0, *las.ncas_sub])
@@ -145,6 +189,8 @@ def fragment_hamiltonians(
         two-electron integrals of shape ``(norb,) * 4``, in the LAS basis.
 
     Raises:
+        ValueError: If ``las`` was built without the density fitting its mean
+            field uses; see :func:`LASSCF`.
         RuntimeError: If ``las.kernel`` returns without visiting every fragment.
     """
     return _capture_hamiltonians(
@@ -159,6 +205,7 @@ def _capture_hamiltonians(
     casdm2fr: Sequence[np.ndarray] | None,
 ) -> list[tuple[float, np.ndarray, np.ndarray]]:
     """:func:`fragment_hamiltonians` from loose arrays; None RDMs use mrh's guess."""
+    _check_density_fitting(las)
     hams = [None] * las.nfrags
 
     def capture(ifrag):
@@ -207,9 +254,12 @@ def replay_orbital_step(
         The total energy and the LAS state after the step.
 
     Raises:
-        ValueError: If mrh passes a Hamiltonian other than the captured one.
+        ValueError: If mrh passes a Hamiltonian other than the captured one, or
+            if ``las`` was built without the density fitting its mean field
+            uses; see :func:`LASSCF`.
         RuntimeError: If mrh does not visit every fragment exactly once.
     """
+    _check_density_fitting(las)
     fragments = embedding.fragments
     if len(results) != len(fragments):
         raise ValueError(f"{len(results)} results for {len(fragments)} fragments")

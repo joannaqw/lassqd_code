@@ -143,7 +143,7 @@ solved outside mrh and independently of each other.
 | Module | Contents |
 | --- | --- |
 | [lassqd.records](lassqd/records.py) | `LASState`, `Fragment`, `Embedding`, `FragmentSamples`, `SQDState`, `FragmentResult`: the data passed between stages, with HDF5 `save`/`load` |
-| [lassqd.las](lassqd/las.py) | `initial_state`, `capture_embedding`, `replay_orbital_step`: the only interface to mrh |
+| [lassqd.las](lassqd/las.py) | `LASSCF`, `initial_state`, `capture_embedding`, `replay_orbital_step`: the only interface to mrh |
 | [lassqd.circuits](lassqd/circuits.py) | `build_circuits`, `submit_circuits`, `collect_samples` |
 | [lassqd.sqd](lassqd/sqd.py) | `FragmentSQD`: configuration recovery, carryover and the fragment solve |
 | [lassqd.hybrid](lassqd/hybrid.py) | `solve_fragments`, `update_orbitals`, and the serial driver `run_lassqd` |
@@ -158,7 +158,11 @@ without mrh, PySCF or Qiskit installed.
 The sketch below assumes that `mf` is a prepared PySCF mean-field object,
 `mo_coeff` contains localized orbitals for two (6e,5o) fragments, and
 `prepare_fragment` is a circuit builder as in the [tutorial](docs/lassqd.ipynb)
-or the [FeFe example](examples/fefe_lassqd/lassqd_fefe.py):
+or the [FeFe example](examples/fefe_lassqd/lassqd_fefe.py). Build the LAS object
+with `lassqd.LASSCF`, mrh's RDM-based LASSCF factory: it uses density fitting
+when `mf` does, so its active-space integrals and potentials agree. LASSQD
+rejects an mrh `LASSCFNoSymm` constructed directly from a density-fitted mean
+field, which would mix exact and density-fitted integrals.
 
 ```python
 from functools import partial
@@ -166,9 +170,9 @@ from functools import partial
 import ffsim
 from qiskit_addon_sqd.fermion import solve_sci_batch
 
-from lassqd import FragmentSQD, LASSCFNoSymm, initial_state, lassqd_pdft_energy, run_lassqd
+from lassqd import LASSCF, FragmentSQD, initial_state, lassqd_pdft_energy, run_lassqd
 
-las = LASSCFNoSymm(mf, (5, 5), ((4, 2), (2, 4)), spin_sub=(3, 3))
+las = LASSCF(mf, (5, 5), ((4, 2), (2, 4)), spin_sub=(3, 3))
 solvers = [
     FragmentSQD(
         50,
@@ -258,7 +262,7 @@ for cycle in range(max_cycles):
   Hamiltonian against the captured one and return the stored fragment RDMs. mrh
   then computes the LAS energy, takes one orbital step and canonicalizes.
 
-To resume, load the records into a new `LASSCFNoSymm` built the same way: pass
+To resume, load the records into a new LAS object built the same way: pass
 `LASState.load(...)` to `capture_embedding` or `run_lassqd`, assign
 `solver.state = SQDState.load(...)`, and solve `FragmentSamples.load(...)` again
 if the failure came after sampling. A resumed cycle reproduces the

@@ -10,6 +10,8 @@ from ffsim.qiskit import (
     UCJOpSpinUnbalancedJW,
 )
 from ffsim.random import random_ucj_op_spin_unbalanced
+from mrh.my_pyscf.mcscf.lasci import _DFLASCI
+from mrh.my_pyscf.mcscf.lasscf_rdm import LASSCFNoSymm
 from pyscf import gto, scf
 from qiskit import QuantumCircuit
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
@@ -18,11 +20,11 @@ from qiskit_aer.primitives import SamplerV2
 
 import lassqd.las
 from lassqd import (
+    LASSCF,
     Embedding,
     FragmentResult,
     FragmentSamples,
     FragmentSQD,
-    LASSCFNoSymm,
     LASState,
     SQDState,
     build_circuits,
@@ -46,7 +48,7 @@ def make_solvers(las):
 
 def h6_las(mf):
     """A new LAS object with the h6 fixture's fragments."""
-    return LASSCFNoSymm(mf, (3, 3), ((2, 1), (1, 2)), spin_sub=(2, 2))
+    return LASSCF(mf, (3, 3), ((2, 1), (1, 2)), spin_sub=(2, 2))
 
 
 def sample(las, state):
@@ -83,7 +85,7 @@ def run(mf, las, mo, **kwargs):
 
 def test_full_space_lassqd_matches_lasscf(h4):
     mf, las, mo = h4
-    ref = LASSCFNoSymm(mf, (2, 2), ((1, 1), (1, 1)), spin_sub=(1, 1))
+    ref = LASSCF(mf, (2, 2), ((1, 1), (1, 1)), spin_sub=(1, 1))
     ref.kernel(mo)
     result = run(mf, las, mo)
     assert result.converged
@@ -96,9 +98,9 @@ def test_exact_fragments_match_lasscf_for_coupled_fragments():
     xs = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
     mol = gto.M(atom=[("H", (x, 0, 0)) for x in xs], basis="sto-6g", verbose=0)
     mf = scf.RHF(mol).run()
-    las = LASSCFNoSymm(mf, (6, 6), ((3, 3), (3, 3)), spin_sub=(1, 1))
+    las = LASSCF(mf, (6, 6), ((3, 3), (3, 3)), spin_sub=(1, 1))
     mo = las.localize_init_guess((list(range(6)), list(range(6, 12))), mf.mo_coeff)
-    ref = LASSCFNoSymm(mf, (6, 6), ((3, 3), (3, 3)), spin_sub=(1, 1))
+    ref = LASSCF(mf, (6, 6), ((3, 3), (3, 3)), spin_sub=(1, 1))
     ref.kernel(mo.copy())
     # Full-space counts and batches: each fragment solve is exact.
     solvers = [
@@ -396,3 +398,48 @@ def test_lucj_sampling_in_hybrid_loop(h6, sampler_type, groups, shots):
                 assert len(key) == 2 * norb
                 assert key[norb:].count("1") == nelec[0]
                 assert key[:norb].count("1") == nelec[1]
+
+
+def h4_density_fitted():
+    """The h4 fixture's molecule with a density-fitted mean field."""
+    mol = gto.M(
+        atom="H 0 0 0; H 0.8 0 0; H 3.0 0 0; H 3.8 0 0", basis="6-31g", verbose=0
+    )
+    return scf.RHF(mol).density_fit().run()
+
+
+def h4_las(build, mf):
+    """``build(mf, ...)`` with the h4 fixture's fragments, and its initial orbitals."""
+    las = build(mf, (2, 2), ((1, 1), (1, 1)), spin_sub=(1, 1))
+    return las, las.localize_init_guess(([0, 1], [2, 3]), las.sort_mo([1, 2, 3, 4]))
+
+
+def test_density_fitted_lassqd_matches_density_fitted_lasscf():
+    mf = h4_density_fitted()
+    las, mo = h4_las(LASSCF, mf)
+    assert isinstance(las, _DFLASCI)
+    ref, _ = h4_las(LASSCF, mf)
+    ref.kernel(mo.copy())
+    result = run(mf, las, mo)
+    # Full-space counts make each fragment solve exact.
+    assert result.converged
+    assert abs(result.e_tot - ref.e_tot) < 1e-7
+
+
+def test_las_without_its_mean_fields_density_fitting_is_rejected():
+    mf = h4_density_fitted()
+    las, mo = h4_las(LASSCF, mf)
+    samples = sample(las, initial_state(las, mo))
+    results = solve_fragments(samples, make_solvers(las))
+    # Built directly, the LAS object would use exact active-space integrals with
+    # the mean field's density-fitted potentials.
+    mixed, _ = h4_las(LASSCFNoSymm, mf)
+    saved = mixed.fciboxes, mixed.max_cycle_macro, mixed.max_cycle_rdmjk
+    match = "LAS object does not"
+    with pytest.raises(ValueError, match=match):
+        initial_state(mixed, mo)
+    with pytest.raises(ValueError, match=match):
+        capture_embedding(mixed, samples.embedding.state)
+    with pytest.raises(ValueError, match=match):
+        replay_orbital_step(mixed, samples.embedding, results)
+    assert (mixed.fciboxes, mixed.max_cycle_macro, mixed.max_cycle_rdmjk) == saved

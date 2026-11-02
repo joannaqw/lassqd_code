@@ -12,7 +12,7 @@ from qiskit.primitives import (
     SamplerPubResult,
 )
 
-from lassqd import Fragment, LASSCFNoSymm
+from lassqd import LASSCF, Fragment
 
 
 def full_counts(norb, nelec, count=10):
@@ -73,7 +73,7 @@ def h4():
         atom="H 0 0 0; H 0.8 0 0; H 3.0 0 0; H 3.8 0 0", basis="6-31g", verbose=0
     )
     mf = scf.RHF(mol).run()
-    las = LASSCFNoSymm(mf, (2, 2), ((1, 1), (1, 1)), spin_sub=(1, 1))
+    las = LASSCF(mf, (2, 2), ((1, 1), (1, 1)), spin_sub=(1, 1))
     mo = las.localize_init_guess(([0, 1], [2, 3]), las.sort_mo([1, 2, 3, 4]))
     return mf, las, mo
 
@@ -88,6 +88,6 @@ def h6():
         verbose=0,
     )
     mf = scf.RHF(mol).run()
-    las = LASSCFNoSymm(mf, (3, 3), ((2, 1), (1, 2)), spin_sub=(2, 2))
+    las = LASSCF(mf, (3, 3), ((2, 1), (1, 2)), spin_sub=(2, 2))
     mo = las.localize_init_guess(([0, 1, 2], [3, 4, 5]), mf.mo_coeff)
     return mf, las, mo
