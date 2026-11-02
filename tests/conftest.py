@@ -52,8 +52,8 @@ class FullSpaceSampler(BaseSamplerV2):
         return job
 
 
-def empty_circuit(h1, h2, norb, nelec):
-    return QuantumCircuit(2 * norb)
+def empty_circuit(fragment):
+    return QuantumCircuit(2 * fragment.norb)
 
 
 @pytest.fixture

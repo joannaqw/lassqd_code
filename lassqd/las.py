@@ -17,10 +17,11 @@ from mrh.my_pyscf.mcscf.lasscf_rdm import (
     make_fcibox,
 )
 
-from lassqd.records import LASState
+from lassqd.records import Embedding, Fragment, LASState
 
 __all__ = [
     "LASSCFNoSymm",
+    "capture_embedding",
     "fragment_hamiltonians",
     "initial_state",
     "set_fragment_kernels",
@@ -77,6 +78,36 @@ def initial_state(las: LASSCFNoSymm, mo_coeff: np.ndarray) -> LASState:
         tuple(np.stack(dm1rs) for dm1rs in casdm1frs),
         tuple(np.stack(dm2r) for dm2r in casdm2fr),
     )
+
+
+def capture_embedding(las: LASSCFNoSymm, state: LASState) -> Embedding:
+    """Capture every fragment's Hamiltonian at ``state`` and find its sampling basis.
+
+    Args:
+        las: RDM-based LASSCF object.
+        state: Orbitals to build the fragment Hamiltonians at, and the fragment
+            RDMs that set each fragment's embedding in the others.
+
+    Returns:
+        The fragments of ``state``, each with its LAS orbitals and ROHF basis.
+    """
+    hamiltonians = fragment_hamiltonians(las, state)
+    bounds = las.ncore + np.cumsum([0, *las.ncas_sub])
+    fragments = [
+        Fragment.from_hamiltonian(
+            norb,
+            tuple(nelec),
+            h0,
+            h1s,
+            h2,
+            index=i,
+            las_orbitals=state.mo_coeff[:, start:stop],
+        )
+        for i, ((h0, h1s, h2), norb, nelec, start, stop) in enumerate(
+            zip(hamiltonians, las.ncas_sub, las.nelecas_sub, bounds[:-1], bounds[1:])
+        )
+    ]
+    return Embedding(state, fragments, las._scf.get_ovlp())
 
 
 class _HamiltoniansCaptured(Exception):

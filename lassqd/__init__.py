@@ -10,48 +10,50 @@ import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from lassqd.hybrid import (
-        CycleResult,
+    from lassqd.circuits import (
         FragmentCircuits,
-        FragmentSamples,
-        HybridResult,
         build_circuits,
         collect_samples,
-        run_lassqd,
-        solve_cycle,
         submit_circuits,
     )
+    from lassqd.hybrid import CycleResult, HybridResult, run_lassqd, solve_cycle
     from lassqd.las import (
         LASSCFNoSymm,
+        capture_embedding,
         fragment_hamiltonians,
         initial_state,
         set_fragment_kernels,
     )
     from lassqd.pdft import lassqd_pdft_energy
-    from lassqd.records import LASState
+    from lassqd.records import Embedding, Fragment, FragmentSamples, LASState
     from lassqd.sqd import FragmentSQD
 
 _EXPORTS = {
     "CycleResult": "lassqd.hybrid",
-    "FragmentCircuits": "lassqd.hybrid",
+    "Embedding": "lassqd.records",
+    "Fragment": "lassqd.records",
+    "FragmentCircuits": "lassqd.circuits",
     "FragmentSQD": "lassqd.sqd",
-    "FragmentSamples": "lassqd.hybrid",
+    "FragmentSamples": "lassqd.records",
     "HybridResult": "lassqd.hybrid",
     "LASSCFNoSymm": "lassqd.las",
     "LASState": "lassqd.records",
-    "build_circuits": "lassqd.hybrid",
-    "collect_samples": "lassqd.hybrid",
+    "build_circuits": "lassqd.circuits",
+    "capture_embedding": "lassqd.las",
+    "collect_samples": "lassqd.circuits",
     "fragment_hamiltonians": "lassqd.las",
     "initial_state": "lassqd.las",
     "lassqd_pdft_energy": "lassqd.pdft",
     "run_lassqd": "lassqd.hybrid",
     "set_fragment_kernels": "lassqd.las",
     "solve_cycle": "lassqd.hybrid",
-    "submit_circuits": "lassqd.hybrid",
+    "submit_circuits": "lassqd.circuits",
 }
 
 __all__ = [
     "CycleResult",
+    "Embedding",
+    "Fragment",
     "FragmentCircuits",
     "FragmentSQD",
     "FragmentSamples",
@@ -59,6 +61,7 @@ __all__ = [
     "LASSCFNoSymm",
     "LASState",
     "build_circuits",
+    "capture_embedding",
     "collect_samples",
     "fragment_hamiltonians",
     "initial_state",

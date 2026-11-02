@@ -10,7 +10,7 @@ from qiskit_addon_sqd.fermion import (
     diagonalize_fermionic_hamiltonian,
 )
 
-from lassqd.basis import fragment_mo_basis, from_mo
+from lassqd.fragment import fragment_mo_basis, from_mo
 
 _DEFAULT_CARRYOVER_THRESHOLD = (
     signature(diagonalize_fermionic_hamiltonian)

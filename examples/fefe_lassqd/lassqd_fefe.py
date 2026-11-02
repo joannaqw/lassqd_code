@@ -14,18 +14,21 @@ from pyscf.mcscf import avas
 from qiskit import QuantumCircuit
 from qiskit_addon_sqd.fermion import SCIResult, SCIState
 
-from lassqd import CycleResult, FragmentSQD, LASSCFNoSymm, initial_state, run_lassqd
-from lassqd.basis import fragment_mo_basis, fragment_rohf
+from lassqd import (
+    CycleResult,
+    Fragment,
+    FragmentSQD,
+    LASSCFNoSymm,
+    initial_state,
+    run_lassqd,
+)
+from lassqd.fragment import fragment_rohf
 
 
-def prepare_fragment(
-    h1: np.ndarray, h2: np.ndarray, norb: int, nelec: tuple[int, int]
-) -> QuantumCircuit:
-    """Prepare this example's CCSD-initialized LUCJ state in the SQD ROHF basis."""
-    norb = int(norb)
-    nelec = tuple(int(n) for n in nelec)
-    _, h1_mo, h2_mo = fragment_mo_basis(h1, h2, norb, nelec)
-    mf_mo = fragment_rohf(h1_mo, h2_mo, norb, nelec)
+def prepare_fragment(fragment: Fragment) -> QuantumCircuit:
+    """Prepare this example's CCSD-initialized LUCJ state in the sampling basis."""
+    norb, nelec = fragment.norb, fragment.nelec
+    mf_mo = fragment_rohf(fragment.h1, fragment.h2, norb, nelec)
     ccsd = cc.CCSD(mf_mo)
     ccsd.verbose = 0
     ccsd.kernel()
@@ -184,7 +187,7 @@ result = run_lassqd(
     solvers,
     ffsim.qiskit.FfsimSampler(),
     circuit_builder=prepare_fragment,
-    glue_circuits=False,
+    groups=[[0], [1]],
     shots=100_000,
     max_cycles=50,
     conv_tol=1e-5,

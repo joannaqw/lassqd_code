@@ -1,9 +1,10 @@
-"""Fragment orbital bases.
+"""Fragment ROHF orbitals.
 
-LASSCF hands each fragment kernel its Hamiltonian in the LAS (localized active)
-orbital basis. Both the circuit builder and the SQD solver first rotate it to the
-fragment's own ROHF orbitals, found by running ROHF on a fake molecule whose
-integrals are the fragment Hamiltonian.
+LASSCF hands each fragment its Hamiltonian in the LAS (localized active)
+orbital basis. :meth:`lassqd.records.Fragment.from_hamiltonian` rotates it once
+to the fragment's own ROHF orbitals, found by running ROHF on a fake molecule
+whose integrals are the fragment Hamiltonian. Circuits are prepared and samples
+are interpreted in that basis.
 """
 
 from __future__ import annotations
@@ -12,6 +13,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from pyscf import gto
+
+from lassqd.records import from_mo, to_mo
+
+__all__ = ["fragment_mo_basis", "fragment_rohf", "from_mo", "to_mo"]
 
 if TYPE_CHECKING:
     from pyscf.scf.rohf import ROHF
@@ -45,48 +50,6 @@ def fragment_rohf(
     mf._eri = h2
     mf.kernel()
     return mf
-
-
-def to_mo(
-    mo_coeff: np.ndarray, h1: np.ndarray, h2: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Rotate one- and two-electron integrals into the ``mo_coeff`` basis.
-
-    Args:
-        mo_coeff: Orbital coefficients, shape ``(norb, norb)``; column ``i`` is
-            orbital ``i``.
-        h1: One-electron integrals, shape ``(norb, norb)``.
-        h2: Two-electron integrals in chemists' notation, shape ``(norb,) * 4``.
-
-    Returns:
-        ``(h1_mo, h2_mo)``, the integrals in the ``mo_coeff`` basis.
-    """
-    C = mo_coeff
-    h1_mo = np.einsum("pi,pr,rj->ij", C, h1, C, optimize=True)
-    h2_mo = np.einsum("pi,rj,prqs,qk,sl->ijkl", C, C, h2, C, C, optimize=True)
-    return h1_mo, h2_mo
-
-
-def from_mo(
-    mo_coeff: np.ndarray, dm1s: np.ndarray, dm2: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Rotate spin-separated 1-RDMs and a spin-summed 2-RDM out of the ``mo_coeff`` basis.
-
-    ``mo_coeff`` is orthonormal, so its inverse is its transpose.
-
-    Args:
-        mo_coeff: Orthonormal orbital coefficients, shape ``(norb, norb)``.
-        dm1s: Alpha and beta 1-RDMs in the ``mo_coeff`` basis, shape
-            ``(2, norb, norb)``.
-        dm2: Spin-summed 2-RDM in the ``mo_coeff`` basis, shape ``(norb,) * 4``.
-
-    Returns:
-        ``(dm1s, dm2)`` in the original basis, with the same shapes.
-    """
-    C = mo_coeff
-    dm1s = C @ dm1s @ C.T
-    dm2 = np.einsum("ip,jr,prqs,kq,ls->ijkl", C, C, dm2, C, C, optimize=True)
-    return dm1s, dm2
 
 
 def fragment_mo_basis(

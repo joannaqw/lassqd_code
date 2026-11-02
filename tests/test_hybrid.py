@@ -24,13 +24,13 @@ from lassqd import (
     FragmentSQD,
     LASSCFNoSymm,
     build_circuits,
+    capture_embedding,
     collect_samples,
     initial_state,
     run_lassqd,
     solve_cycle,
     submit_circuits,
 )
-from lassqd.hybrid import _glue_circuits
 
 
 def make_solvers(las):
@@ -47,9 +47,9 @@ def h6_las(mf):
 
 def cycle_by_stages(las, state, solvers):
     """One cycle from the stages, starting from ``state``."""
-    circuits = build_circuits(las, state, empty_circuit)
+    circuits = build_circuits(capture_embedding(las, state), empty_circuit)
     job = submit_circuits(FullSpaceSampler(las), circuits)
-    samples = collect_samples(circuits, job.result(), job_id=job.job_id())
+    samples = collect_samples(circuits, job.result(), job_ids=job.job_id())
     return circuits, samples, solve_cycle(las, samples, solvers)
 
 
@@ -77,25 +77,6 @@ def run(mf, las, mo, **kwargs):
         max_cycles=100,
         **kwargs,
     )
-
-
-def test_glue_and_sample_recovers_each_fragment():
-    def x_circuit(n, flipped):
-        qc = QuantumCircuit(n)
-        for q in flipped:
-            qc.x(q)
-        return qc
-
-    circuits = [x_circuit(2, [0]), x_circuit(3, [2]), x_circuit(2, [0, 1])]
-    glued = _glue_circuits(circuits)
-    pass_manager = generate_preset_pass_manager(
-        backend=AerSimulator(), optimization_level=3
-    )
-    isa = pass_manager.run(glued)
-    data = SamplerV2().run([isa], shots=64).result()[0].data
-    # Within a fragment, qubit 0 is the rightmost bit.
-    counts = [data[creg.name].get_counts() for creg in glued.cregs]
-    assert counts == [{"01": 64}, {"100": 64}, {"11": 64}]
 
 
 def test_full_space_lassqd_matches_lasscf(h4):
@@ -212,9 +193,10 @@ def test_captured_hamiltonians_are_the_solved_ones(h6):
     for _ in range(2):
         circuits, _, step = cycle_by_stages(las, state, solvers)
         state = step.state
-        for solver, captured in zip(solvers, circuits.hamiltonians):
+        for solver, fragment in zip(solvers, circuits.embedding.fragments):
+            captured = (fragment.h0, fragment.h1s_las, fragment.h2_las)
             for solved, ref in zip(solver.hamiltonian, captured):
-                np.testing.assert_allclose(solved, ref, rtol=0, atol=1e-12)
+                assert np.array_equal(solved, ref)
 
 
 def test_saved_samples_resolve_identically_in_a_new_las(h6):
@@ -222,7 +204,7 @@ def test_saved_samples_resolve_identically_in_a_new_las(h6):
     solvers = make_solvers(las)
     # One cycle first, so the solvers have carryover and orbital state.
     _, _, first = cycle_by_stages(las, initial_state(las, mo), solvers)
-    circuits = build_circuits(las, first.state, empty_circuit)
+    circuits = build_circuits(capture_embedding(las, first.state), empty_circuit)
     samples = collect_samples(
         circuits, submit_circuits(FullSpaceSampler(las), circuits).result()
     )
@@ -246,30 +228,30 @@ def test_solve_cycle_restores_las_settings_on_failure(h6, fail_in):
     _, las, mo = h6
     saved = las.max_cycle_macro, las.max_cycle_rdmjk
     counts = [full_counts(n, ne) for n, ne in zip(las.ncas_sub, las.nelecas_sub)]
+    samples = FragmentSamples(capture_embedding(las, initial_state(las, mo)), counts)
     failure = (
-        patch.object(las._scf, "get_ovlp", side_effect=RuntimeError("setup failed"))
+        patch(
+            "lassqd.hybrid.set_fragment_kernels",
+            side_effect=RuntimeError("setup failed"),
+        )
         if fail_in == "setup"
         else nullcontext()
     )
     with failure, pytest.raises(RuntimeError):
-        solve_cycle(
-            las,
-            FragmentSamples(initial_state(las, mo), counts),
-            [FailingSolver(), FailingSolver()],
-        )
+        solve_cycle(las, samples, [FailingSolver(), FailingSolver()])
     assert (las.max_cycle_macro, las.max_cycle_rdmjk) == saved
 
 
 @pytest.mark.parametrize(
-    "sampler_type,glue_circuits,shots",
+    "sampler_type,groups,shots",
     [
-        pytest.param(FfsimSampler, False, None, id="ffsim-default-shots"),
-        pytest.param(FfsimSampler, False, 512, id="ffsim-explicit-shots"),
-        pytest.param(SamplerV2, True, 512, id="aer-glued"),
-        pytest.param(SamplerV2, False, 512, id="aer-separate"),
+        pytest.param(FfsimSampler, [[0], [1]], None, id="ffsim-default-shots"),
+        pytest.param(FfsimSampler, [[0], [1]], 512, id="ffsim-explicit-shots"),
+        pytest.param(SamplerV2, None, 512, id="aer-glued"),
+        pytest.param(SamplerV2, [[0], [1]], 512, id="aer-separate"),
     ],
 )
-def test_lucj_sampling_in_hybrid_loop(h6, sampler_type, glue_circuits, shots):
+def test_lucj_sampling_in_hybrid_loop(h6, sampler_type, groups, shots):
     _, las, mo = h6
     solvers = [
         FragmentSQD(100, max_iterations=1, num_batches=1, seed=0)
@@ -285,10 +267,9 @@ def test_lucj_sampling_in_hybrid_loop(h6, sampler_type, glue_circuits, shots):
 
     counts_per_cycle = []
 
-    def circuit_builder(h1, h2, norb, nelec):
+    def circuit_builder(fragment):
         # Exercise native LUCJ gates without repeating the variational optimization.
-        norb = int(norb)
-        nelec = tuple(int(n) for n in nelec)
+        norb, nelec = fragment.norb, fragment.nelec
         op = random_ucj_op_spin_unbalanced(
             norb,
             interaction_pairs=(
@@ -314,7 +295,7 @@ def test_lucj_sampling_in_hybrid_loop(h6, sampler_type, glue_circuits, shots):
             solvers,
             sampler,
             pass_manager=pass_manager,
-            glue_circuits=glue_circuits,
+            groups=groups,
             shots=shots,
             circuit_builder=circuit_builder,
             max_cycles=2,
@@ -327,7 +308,9 @@ def test_lucj_sampling_in_hybrid_loop(h6, sampler_type, glue_circuits, shots):
     assert len(result.job_ids) == 2
     for call in submit.call_args_list:
         (circuits,) = call.args
-        assert [qc.num_qubits for qc in circuits] == ([12] if glue_circuits else [6, 6])
+        assert [qc.num_qubits for qc in circuits] == (
+            [12] if groups is None else [6, 6]
+        )
     assert len(result.e_hist) == len(counts_per_cycle) == 2
     assert np.all(np.isfinite(result.e_hist))
     for counts in counts_per_cycle:
