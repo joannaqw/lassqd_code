@@ -14,9 +14,9 @@
 ulimit -s unlimited
 export OMP_NUM_THREADS=4
  
-conda activate lassqd
-# pyscf, pyscf-forge, mrh and lassqd are all installed in the env (see README.md);
-# clear these so no other copy on PYTHONPATH can shadow them
+# The repository's virtual environment (see README.md); run from this directory.
+source ../../.venv/bin/activate
+# Clear these so no other copy of PySCF or mrh on PYTHONPATH can shadow them.
 export PYTHONPATH=
 export PYSCF_EXT_PATH=
 

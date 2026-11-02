@@ -21,12 +21,13 @@ dependencies = [
     # Supplied by the editable Git installation in README.md (commit f0077658).
     "mrh==0.1.dev5906+gf00776583",
     "qiskit",
-    "qiskit-aer",
-    "qiskit-addon-sqd>=0.12.0",
-    "ffsim",
+    # 0.13.1 includes SQD's MPI collective support.
+    "qiskit-addon-sqd>=0.13.1",
 ]
 
 [project.optional-dependencies]
+# Local circuit simulation, as in the tutorial and examples.
+sim = ["ffsim", "qiskit-aer"]
 ibm = ["qiskit-ibm-runtime"]
 
 [tool.setuptools]
@@ -37,9 +38,11 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
+    "ffsim",
     "fulqrum>=0.4.5",
     "ipykernel>=7.3.0",
     "pytest>=9.1.1",
+    "qiskit-aer",
     "ruff>=0.16.9",
 ]
 

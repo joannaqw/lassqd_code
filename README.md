@@ -46,7 +46,7 @@ python -m pip install --upgrade \
   pip 'setuptools>=77' wheel setuptools-scm 'cmake>=3.19,<4' 'pyscf==2.14.0'
 python -m pip install --no-build-isolation \
   -e 'git+https://github.com/MatthewRHermes/mrh.git@f007765830b62c83aef5839119732a63f5e463e0#egg=mrh' \
-  -e .
+  -e '.[sim]'
 ```
 
 Pip builds pyscf-forge and mrh automatically. `--no-build-isolation` lets their
@@ -63,9 +63,11 @@ sufficient to set up LASSQD.
 The explicit mrh Git URL in the command above supplies the declared dependency
 as an editable installation, which dependency metadata cannot request.
 
+The `sim` extra installs ffsim and Qiskit Aer for local circuit simulation, as
+used by the tutorial and the examples; LASSQD itself does not need them.
+
 On macOS, see [mrh's README](https://github.com/MatthewRHermes/mrh#readme) for
 compiler and OpenMP setup. On Windows, use Linux through WSL.
-The old `environment.yml` is retained as a historical environment snapshot.
 
 For the IBM hardware example, also run `python -m pip install -e '.[ibm]'`.
 
@@ -81,8 +83,8 @@ git -C .deps/mrh checkout f007765830b62c83aef5839119732a63f5e463e0
 uv sync --python 3.14
 ```
 
-`uv sync` creates `.venv`, installs LASSQD and its development dependencies, and
-builds the native extensions automatically. `pyproject.toml` supplies the extra
+`uv sync` creates `.venv`, installs LASSQD and its development dependencies
+(including ffsim and Qiskit Aer), and builds the native extensions automatically. `pyproject.toml` supplies the extra
 build requirements, including CMake and the pinned PySCF version, in isolated
 build environments. No separate Python build-tool installation or environment
 activation is needed.
@@ -132,26 +134,31 @@ For larger calculations, adjust the thread counts to the CPU resources available
 
 ## The `lassqd` package
 
-Each hybrid cycle builds fragment Hamiltonians at fixed orbitals, prepares and
-samples all fragment circuits in one job, and solves each fragment with SQD.
-LASSCF then uses the resulting reduced density matrices (RDMs) for one orbital
-step before the next cycle.
+Each hybrid cycle starts from a LAS state: orbitals and fragment RDMs. LASSQD
+captures each fragment's embedded Hamiltonian from mrh, samples one circuit per
+fragment, solves each fragment with SQD on its samples, and then replays the
+fragment RDMs into mrh, which takes one LASSCF orbital step. The fragments are
+solved outside mrh and independently of each other.
 
-| Module | Interface |
+| Module | Contents |
 | --- | --- |
-| [lassqd.las](lassqd/las.py) | `LASSCFNoSymm`, `fragment_hamiltonians`, and `set_fragment_kernels`: the mrh interface |
-| [lassqd.basis](lassqd/basis.py) | `fragment_mo_basis` and `fragment_rohf`: fragment orbital preparation |
-| [lassqd.sqd](lassqd/sqd.py) | `FragmentSQD`: configuration recovery and determinant carryover |
-| [lassqd.hybrid](lassqd/hybrid.py) | `run_lassqd` and `HybridResult`: the hybrid loop and its result; `build_circuits`, `submit_circuits`, `collect_samples` and `solve_cycle`: its stages |
-| [lassqd.pdft](lassqd/pdft.py) | `lassqd_pdft_energy`, `save_rdms`, and `load_rdms`: LAS-PDFT and wave-function storage |
+| [lassqd.records](lassqd/records.py) | `LASState`, `Fragment`, `Embedding`, `FragmentSamples`, `SQDState`, `FragmentResult`: the data passed between stages, with HDF5 `save`/`load` |
+| [lassqd.las](lassqd/las.py) | `initial_state`, `capture_embedding`, `replay_orbital_step`: the only interface to mrh |
+| [lassqd.circuits](lassqd/circuits.py) | `build_circuits`, `submit_circuits`, `collect_samples` |
+| [lassqd.sqd](lassqd/sqd.py) | `FragmentSQD`: configuration recovery, carryover and the fragment solve |
+| [lassqd.hybrid](lassqd/hybrid.py) | `solve_fragments`, `update_orbitals`, and the serial driver `run_lassqd` |
+| [lassqd.fragment](lassqd/fragment.py) | `fragment_rohf`: the fragment ROHF basis |
+| [lassqd.pdft](lassqd/pdft.py) | `lassqd_pdft_energy`: LAS-PDFT on a LAS state |
+
+`lassqd.records` imports only NumPy and h5py, so stored records can be read
+without mrh, PySCF or Qiskit installed.
 
 ### Usage
 
-`run_lassqd` requires a `circuit_builder(h1, h2, norb, nelec)` callable. Define
-`prepare_fragment` as in the [tutorial](docs/lassqd.ipynb) or the
-[FeFe example](examples/fefe_lassqd/lassqd_fefe.py), then pass it explicitly.
-The sketch below assumes that `mf` is a prepared PySCF mean-field object and
-`mo_coeff` contains localized orbitals for the two (6e,5o) fragments:
+The sketch below assumes that `mf` is a prepared PySCF mean-field object,
+`mo_coeff` contains localized orbitals for two (6e,5o) fragments, and
+`prepare_fragment` is a circuit builder as in the [tutorial](docs/lassqd.ipynb)
+or the [FeFe example](examples/fefe_lassqd/lassqd_fefe.py):
 
 ```python
 from functools import partial
@@ -159,259 +166,135 @@ from functools import partial
 import ffsim
 from qiskit_addon_sqd.fermion import solve_sci_batch
 
-from lassqd import FragmentSQD, LASSCFNoSymm, lassqd_pdft_energy, run_lassqd
+from lassqd import FragmentSQD, LASSCFNoSymm, initial_state, lassqd_pdft_energy, run_lassqd
 
 las = LASSCFNoSymm(mf, (5, 5), ((4, 2), (2, 4)), spin_sub=(3, 3))
 solvers = [
     FragmentSQD(
-        samples_per_batch=50,
+        50,
         max_iterations=6,
         num_batches=15,
         sci_solver=partial(solve_sci_batch, spin_sq=2.0, max_cycle=200, tol=1e-12),
+        seed=seed,
     )
-    for _ in range(las.nfrags)
+    for seed in (1, 2)
 ]
-sampler = ffsim.qiskit.FfsimSampler()
 result = run_lassqd(
     las,
-    mo_coeff,
+    initial_state(las, mo_coeff),
     solvers,
-    sampler,
+    ffsim.qiskit.FfsimSampler(seed=0),
     circuit_builder=prepare_fragment,
-    glue_circuits=False,
+    groups=[[0], [1]],
     shots=100_000,
 )
-e_pdft, e_ot, e_states = lassqd_pdft_energy(las, result.casdm1frs, result.casdm2fr, result.mo_coeff)
+e_pdft, e_ot, e_states = lassqd_pdft_energy(las, result.state)
 ```
 
-`max_cycles=50` and `conv_tol=1e-5` are the hybrid loop defaults. Check
-`result.converged` and `result.e_hist` before using the final energy: convergence
-means that the absolute energy change between consecutive cycles is below
-`conv_tol`.
+`result.converged` means only that the absolute energy change between
+consecutive cycles fell below `conv_tol` (default `1e-5`) within `max_cycles`
+(default 50). `result.state` is the final LAS wave function and
+`result.results` holds the last cycle's fragment results.
 
-### Circuit builder
+### Circuits
 
-The builder receives integrals in the LAS basis (`h2` in chemists' notation).
-It must return an unmeasured circuit with `2 * norb` qubits whose occupations
-refer to the fragment ROHF basis returned by `lassqd.basis.fragment_mo_basis`,
-which is also used by `FragmentSQD`. Alpha orbitals occupy qubits `0..norb-1`
-and beta orbitals `norb..2*norb-1`. Orbital and electron counts may be NumPy
-integers; convert them to Python integers for Qiskit.
+`circuit_builder(fragment)` receives a `Fragment` and returns an unmeasured
+circuit with `2 * fragment.norb` qubits. It prepares a state in the fragment's
+sampling basis, its ROHF orbitals, whose integrals are `fragment.h1` and
+`fragment.h2` (chemists' notation). Alpha orbitals occupy qubits `0..norb-1` and
+beta orbitals `norb..2*norb-1`. There is no default ansatz; the examples use
+CCSD-initialized LUCJ circuits.
 
-There is no default ansatz. The example builders choose CCSD-initialized local
-unitary cluster Jastrow (LUCJ) circuits and specify their interaction pairs,
-layer count, and compression settings locally. Code using the former
-`lassqd.lucj_circuit` default must now supply its own builder through
-`circuit_builder`.
-
-### Sampling
-
-For classical LUCJ sampling, use `FfsimSampler` with `glue_circuits=False` and
-no pass manager. Each fragment is a separate measured circuit in the same job,
-so ffsim works in each fragment's fixed electron-number sector. The example above
-has two (6e,5o) fragments: 10 qubits and 50 state amplitudes each. The larger
-classical FeFe example has two (6e,10o) fragments: 20 qubits and 9,450 amplitudes each.
-
-The default `glue_circuits=True` glues the fragments into one circuit with
-one classical register per fragment, as used by the IBM hardware example. Aer
-and IBM Runtime require a `pass_manager` to compile circuits containing native
-ffsim gates. Create it with `generate_preset_pass_manager(...)`, then set
-`pass_manager.pre_init = ffsim.qiskit.PRE_INIT`.
-`shots` is the number of samples per fragment per cycle in either mode;
-`shots=None` uses the sampler's default.
+`groups` lists the fragments of each circuit. A group of several fragments is
+glued into one circuit with one classical register per fragment; `None`, the
+default, glues all fragments. For native ffsim gates sampled with
+`FfsimSampler`, use one fragment per group (`groups=[[0], [1]]`) and no pass
+manager. Aer and IBM Runtime need a `pass_manager` that compiles ffsim gates:
+create it with `generate_preset_pass_manager(...)`, then set
+`pass_manager.pre_init = ffsim.qiskit.PRE_INIT`. `shots` is the number of
+samples per fragment per cycle.
 
 ### Running the stages separately
 
-`run_lassqd` composes three stages, which can also be called directly, for example
-to save a cycle's samples, re-solve them with different SQD settings, or resume
-after a classical failure without submitting another quantum job:
+`run_lassqd` composes stage functions that map records to records. Call them
+directly to store each stage's output, re-solve saved samples with other SQD
+settings, sample groups in separate jobs, or resume after a failure:
 
 ```python
-import copy
-import pickle
+from lassqd import (
+    build_circuits,
+    capture_embedding,
+    collect_samples,
+    solve_fragments,
+    submit_circuits,
+    update_orbitals,
+)
 
-from lassqd import build_circuits, collect_samples, solve_cycle, submit_circuits
-
-step = None  # no previous cycle: start from mrh's initial-guess RDMs
+state = initial_state(las, mo_coeff)
 for cycle in range(max_cycles):
-    rdms = {} if step is None else dict(casdm1frs=step.casdm1frs, casdm2fr=step.casdm2fr)
-    circuits = build_circuits(las, mo_coeff, prepare_fragment, glue_circuits=False, **rdms)
+    embedding = capture_embedding(las, state)  # fragment Hamiltonians and bases
+    circuits = build_circuits(embedding, prepare_fragment, groups=[[0], [1]])
     job = submit_circuits(sampler, circuits, shots=100_000)
-    print(job.job_id())  # keep this to recover a remote result
-    samples = collect_samples(circuits, job.result(), job_id=job.job_id())
-    with open(f"samples_{cycle}.pkl", "wb") as f:
-        pickle.dump(samples, f)
+    samples = collect_samples(circuits, job.result(), job_ids=job.job_id())
+    samples.save(f"samples_{cycle}.h5")
 
-    saved_solvers = copy.deepcopy(solvers)  # state before this cycle's solve
-    step = solve_cycle(las, samples, solvers)  # SQD and one orbital step
-    mo_coeff = step.mo_coeff
+    results = solve_fragments(samples, solvers)  # SQD, outside mrh
+    for i, solver in enumerate(solvers):
+        solver.state.save(f"sqd_state_{cycle}_{i}.h5")
+    step = update_orbitals(las, embedding, results)  # one LASSCF orbital step
+    state = step.state
+    state.save(f"state_{cycle}.h5")
 ```
 
-- `build_circuits` collects the fragment Hamiltonians at `mo_coeff` and builds,
-  measures and compiles the circuits (`pass_manager`, `glue_circuits`). Pass the
-  previous cycle's RDMs, as above: they set each fragment's embedding in the
-  others, and `run_lassqd` continues from them in every cycle, as classical LASSCF
-  does. Restarting each cycle from mrh's initial guess instead converges to a
-  slightly different energy.
-- `submit_circuits` submits them in one sampler job. `collect_samples` accepts
-  any result of that job, including one recovered later from a remote service
-  by its job ID.
-- `solve_cycle` solves the fragments at `samples.mo_coeff`, starting from the RDMs
-  the circuits were built from, and takes one LASSCF orbital step; mrh does both
-  inside one `las.kernel` call. It returns a `CycleResult` with the energy,
-  updated orbitals and matching fragment RDMs.
+- `capture_embedding` enters mrh with kernels that record each fragment's
+  Hamiltonian at the state's orbitals and starting RDMs, then stops. The state's
+  RDMs set each fragment's embedding in the others; `run_lassqd` continues from
+  the previous cycle's RDMs, as classical LASSCF does.
+- `collect_samples` accepts the pub results of any job that ran the circuits,
+  including one recovered later by job ID, or results combined from several jobs
+  with `submit_circuits(..., indices=...)`.
+- `update_orbitals` re-enters mrh at the same state with kernels that check each
+  Hamiltonian against the captured one and return the stored fragment RDMs. mrh
+  then computes the LAS energy, takes one orbital step and canonicalizes.
 
-The fragment Hamiltonians depend only on the LAS setup and the orbitals and RDMs
-stored in the samples, so saved samples can be solved later with a new LAS object
-built the same way. To restart `run_lassqd` from a saved wave function, pass its
-orbitals as `mo_coeff` and its RDMs as `casdm1frs` and `casdm2fr`, for example
-from `load_rdms`.
-`solve_cycle` updates the solvers' state, such as carryover and the random stream,
-so pass `copy.deepcopy` of the solvers to re-solve the same samples from the same
-starting point. `HybridResult.job_ids` lists the job of every `run_lassqd` cycle.
+To resume, load the records into a new `LASSCFNoSymm` built the same way: pass
+`LASState.load(...)` to `capture_embedding` or `run_lassqd`, assign
+`solver.state = SQDState.load(...)`, and solve `FragmentSamples.load(...)` again
+if the failure came after sampling. A resumed cycle reproduces the
+uninterrupted one bit for bit.
 
 ### Fragment SQD
 
-`FragmentSQD` uses `qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`
-for configuration recovery and diagonalization. It runs up to `max_iterations`
-rounds, using the best batch's occupancies for recovery, and returns the
-energy and RDMs of the lowest-energy batch across all iterations. Optional
-determinant carryover is handled by the addon within a call and by `FragmentSQD`
-between calls. Circuit construction and SQD use only the alpha one-electron
-Hamiltonian `h1s[0]`, including when the embedding is spin-dependent.
+`FragmentSQD(samples_per_batch, *, seed, sci_solver, callback, **options)`
+solves a fragment with
+`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`, whose names and
+defaults the numerical `options` use. It runs up to `max_iterations` rounds of
+configuration recovery, using the best batch's occupancies, and returns the
+energy and RDMs of the lowest-energy batch across all rounds. Circuits and SQD
+use only the alpha one-electron integrals, also when the embedding is
+spin-dependent.
 
-`FragmentSQD(samples_per_batch, **sqd_options)`
-passes SQD options to `diagonalize_fermionic_hamiltonian` using the addon's names
-and defaults. Only `samples_per_batch` is required. The Hamiltonian, orbital and
-electron counts come from the fragment kernel arguments; the sampled `BitArray`
-is built from `solver.counts`.
+- **State.** `solver.state` is an `SQDState`: the random generator and the
+  carryover strings with their orbital basis. `solve` replaces it only when a
+  solve succeeds; assign an earlier state to repeat a solve.
+- **Carryover.** Determinants with amplitude above `carryover_threshold` are
+  included in every later round and solve, mapped onto the new sampling basis by
+  comparing orbitals in the AO basis. Set `carryover_threshold=None` to disable
+  it.
+- **Batch solver.** `sci_solver(ci_strings, h1, h2, norb, nelec)` returns a
+  list of `SCIResult`; it controls spin constraints and Davidson settings. The
+  default is the addon's `solve_sci_batch` without a spin penalty. The
+  [tutorial](docs/lassqd.ipynb) uses a Fulqrum solver.
+- **Callback.** `callback(results)` receives each round's `SCIResult` list,
+  with energies excluding `h0` and states in the sampling basis, for example to
+  record diagnostics as in the [FeFe example](examples/fefe_lassqd/lassqd_fefe.py).
+- **Collective solves.** `prepare`, `SQDInputs.run` and `finalize` split a solve
+  into rank-0 setup, the SQD call every MPI rank enters, and rank-0 finishing.
 
-The defaults in the locked qiskit-addon-sqd version are:
-
-| Option | Default |
-| --- | --- |
-| `num_batches` | `1` |
-| `max_iterations` | `100` |
-| `energy_tol` | `1e-8` |
-| `occupancies_tol` | `1e-5` |
-| `carryover_threshold` | `1e-4` |
-
-Carryover also persists between fragment calls.
-Set `carryover_threshold=None` (or `np.inf`) to disable it. Set either convergence
-tolerance to `0.0` to run all requested iterations.
-
-For example, use five batches and limit each spin sector to 100 strings:
-
-```python
-solver = FragmentSQD(
-    samples_per_batch=50,
-    max_iterations=100,
-    num_batches=5,
-    energy_tol=1e-8,
-    occupancies_tol=1e-5,
-    max_dim=100,
-    seed=0,
-)
-```
-
-Both convergence criteria must be satisfied to stop early. Options are stored in
-`solver.sqd_options` and can be updated between calls, for example
-`solver.sqd_options["max_dim"] = 200`. The
-`seed` option becomes a persistent NumPy generator on use, so repeated calls
-advance the same random stream. A custom `callback(results)` is passed directly
-to the addon and receives each iteration's list of `SCIResult` objects, with energies
-excluding `h0` and states in the fragment ROHF basis. A custom `sci_solver` accepts
-`(ci_strings, h1, h2, norb, nelec)` and returns that list; it controls its own spin
-constraint and Davidson settings. Explicit configurations are merged with
-carryover from the preceding call before the addon applies `max_dim`.
-Explicit configurations and `initial_occupancies` use the current fragment ROHF basis.
-
-Code using the previous constructor should replace `iterations` with
-`max_iterations` and `n_batches` with `num_batches`, and pass these as keyword
-arguments. Early stopping and carryover are enabled by default.
-
-With `sci_solver=None`, the addon uses `solve_sci_batch` with its default Davidson
-settings and no total-spin penalty. To set a spin target or change Davidson
-settings, pass a configured solver such as
-`partial(solve_sci_batch, spin_sq=2.0, max_cycle=200, tol=1e-12)`, as above.
-These settings belong to the batch solver; `energy_tol` and `occupancies_tol`
-control convergence of configuration recovery.
-
-The [tutorial](docs/lassqd.ipynb) demonstrates a custom `sci_solver` built with
-Fulqrum and SciPy's `eigsh`, without a total-spin penalty.
-
-#### Recording and saving SQD results
-
-`FragmentSQD` keeps the final `e_tot`, `dm1s`, `dm2`, `sci_state`, and carryover
-strings. Use a callback to record iteration summaries or log progress:
-
-```python
-import numpy as np
-
-history = []
-
-
-def record_iteration(results):
-    best = min(results, key=lambda result: result.energy)
-    history.append(
-        {
-            "energy": [r.energy for r in results],
-            "spin_square": [r.sci_state.spin_square() for r in results],
-            "dimension": [r.sci_state.amplitudes.size for r in results],
-            "alpha_count": [len(r.sci_state.ci_strs_a) for r in results],
-            "beta_count": [len(r.sci_state.ci_strs_b) for r in results],
-            "occupancies": np.concatenate(best.orbital_occupancies),
-        }
-    )
-    print(f"SQD round {len(history)}: lowest energy = {best.energy:.12g}")
-
-
-solver = FragmentSQD(50, callback=record_iteration)
-```
-
-The caller owns `history`: clear it before a new solve to record that solve alone.
-These summaries do not retain all the batch wave functions. Callback energies
-exclude `h0`; callback states and occupancies use the current fragment ROHF basis.
-The solver's final attributes are updated **after** the solve returns, so save them
-after `solver(...)` or in `run_lassqd`'s cycle callback:
-
-```python
-from pathlib import Path
-
-directory = Path("fragment_results")
-directory.mkdir(parents=True, exist_ok=True)
-solver.sci_state.save(directory / "sci_vec")
-for name in history[0]:
-    np.save(directory / name, np.asarray([row[name] for row in history]))
-if solver.carryover_strings is not None:
-    np.save(directory / "alpha_strings", solver.carryover_strings[0])
-    np.save(directory / "beta_strings", solver.carryover_strings[1])
-```
-
-For a complete cycle callback preserving the FeFe example's checkpoint filenames,
-see [lassqd_fefe.py](examples/fefe_lassqd/lassqd_fefe.py). It saves after each hybrid
-cycle completes and clears the per-fragment histories. The SQD state remains in
-its fragment ROHF basis; LAS orbitals saved after the cycle include the orbital update.
-
-Migration: remove `output_dir` and `verbose` from `FragmentSQD` construction and
-replace reads of `solver.e_hist`, `d_hist`, `a_hist`, `b_hist`, `s_hist`, and
-`occupancy_hist` with callback-owned summaries. Saving and diagnostic logging are
-now caller responsibilities. `HybridResult.e_hist` still records molecular total
-energies after each hybrid cycle.
-
-### LAS-PDFT and saved wave functions
-
-`result.mo_coeff`, `result.casdm1frs`, and `result.casdm2fr` describe one consistent
-LAS wave function: the RDMs use the active space of the returned orbitals. Pass
-them together to `lassqd_pdft_energy`, which uses the `tPBE` on-top functional by
-default and returns `(e_tot, e_ot, e_states)`: the total energy, its on-top
-component, and the per-state energies.
-
-To save that wave function, pass `mo_coeff=result.mo_coeff` to `save_rdms` along
-with the fragment RDMs. `load_rdms` returns `(casdm1frs, casdm2fr, mo_coeff)`;
-`mo_coeff` is `None` for older files that contain only RDMs. See the
-[FeFe example notes](examples/README.md#fefe_lassqd_pdft) before using the
-historical data committed with that example.
+**Random streams.** Give the sampler and each solver an independent stream,
+for example `sampler_seed, *solver_seeds = np.random.default_rng(seed).spawn(nfrags + 1)`.
+A generator passed as `seed` is copied, so solvers never share a stream, and
+each solver's stream continues across cycles in `solver.state`.
 
 ## Tests
 
