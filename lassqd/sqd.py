@@ -257,8 +257,9 @@ class FragmentSQD:
         options["callback"] = self.callback
         options["seed"] = state.rng()
         return SQDInputs(
-            one_body_tensor=fragment.h1,
-            two_body_tensor=fragment.h2,
+            # Writable copies: batch solvers, such as Cython code, may need them.
+            one_body_tensor=np.array(fragment.h1),
+            two_body_tensor=np.array(fragment.h2),
             bit_array=BitArray.from_counts(counts, num_bits=2 * norb),
             samples_per_batch=self.samples_per_batch,
             norb=norb,

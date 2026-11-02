@@ -645,3 +645,18 @@ def test_permute_carryover_keeps_the_largest_overlap_when_it_is_a_permutation():
 def test_permute_carryover_rejects_64_orbitals():
     with pytest.raises(ValueError, match="63 orbitals"):
         permute_carryover(np.array([1]), np.array([1]), np.eye(64), 64)
+
+
+def test_batch_solver_receives_writable_integrals(fragment):
+    # Records are read-only, but batch solvers such as Fulqrum's need writable
+    # buffers.
+    norb, nelec, h0, h1s, h2 = fragment
+    received = []
+
+    def sci_solver(ci_strings, h1, h2, norb, nelec):
+        received.append((h1.flags.writeable, h2.flags.writeable))
+        return solve_sci_batch(ci_strings, h1, h2, norb, nelec)
+
+    solver = FragmentSQD(50, max_iterations=1, sci_solver=sci_solver)
+    solve_hamiltonian(solver, full_counts(norb, nelec), norb, nelec, h0, h1s, h2)
+    assert received == [(True, True)]
