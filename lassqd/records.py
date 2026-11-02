@@ -496,10 +496,16 @@ class SQDState(_Record):
 
     @classmethod
     def from_seed(cls, seed: int | np.random.Generator | None = None) -> SQDState:
-        """The initial state for ``seed``; a generator is copied, not shared."""
-        if not isinstance(seed, np.random.Generator):
-            seed = np.random.default_rng(seed)
-        return cls(seed.bit_generator.state)
+        """The initial state for ``seed``.
+
+        A generator spawns an independent child stream, so solvers built from
+        one generator draw differently, and reproducibly in construction order.
+        """
+        if isinstance(seed, np.random.Generator):
+            rng = seed.spawn(1)[0]
+        else:
+            rng = np.random.default_rng(seed)
+        return cls(rng.bit_generator.state)
 
     def rng(self) -> np.random.Generator:
         """A new generator in the stored state."""

@@ -100,7 +100,9 @@ def test_fragment_sqd_random_stream_advances_between_calls(carryover_threshold):
             seed=seed,
             callback=observed.append,
         )
-        for seed, observed in zip((0, np.random.default_rng(0)), observations)
+        for seed, observed in zip(
+            (np.random.default_rng(0), np.random.default_rng(0)), observations
+        )
     ]
     h1 = np.diag([0.0, 1.0])
     h2 = np.zeros((2,) * 4)
@@ -111,7 +113,7 @@ def test_fragment_sqd_random_stream_advances_between_calls(carryover_threshold):
             counts = {"0101": 10, "1010": 10}
             solve_hamiltonian(solver, counts, 2, (1, 1), 0.0, h1, h2)
             assert solver.state.carryover_strings is None
-        # Integer seeds and supplied generators yield the same sequence of runs.
+        # Equal generators yield the same sequence of runs.
         energies = [summarize(observed)["e_hist"] for observed in observations]
         assert np.array_equal(*energies)
         if previous is not None:
@@ -586,14 +588,16 @@ def test_fragment_result_sci_state(fragment):
     assert np.isclose(np.sum(state.amplitudes**2), 1.0)
 
 
-def test_sqd_state_copies_generators():
+def test_sqd_state_spawns_from_generators():
     rng = np.random.default_rng(0)
-    state = SQDState.from_seed(rng)
-    rng.random(10)
-    assert state.rng().random() == np.random.default_rng(0).random()
-    assert SQDState.from_seed(0).rng_state == state.rng_state
+    first, second = SQDState.from_seed(rng), SQDState.from_seed(rng)
+    # Each state gets its own stream; the parent's draws are unaffected.
+    assert first.rng().random() != second.rng().random()
+    assert rng.random() == np.random.default_rng(0).random()
+    again = SQDState.from_seed(np.random.default_rng(0))
+    assert again.rng().random() == first.rng().random()
     with pytest.raises(ValueError, match="together"):
-        SQDState(state.rng_state, (np.array([1]), np.array([1])))
+        SQDState(first.rng_state, (np.array([1]), np.array([1])))
 
 
 def popcounts(strings):

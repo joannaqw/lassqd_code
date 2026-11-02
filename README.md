@@ -298,8 +298,9 @@ spin-dependent.
 
 **Random streams.** Give the sampler and each solver an independent stream,
 for example `sampler_seed, *solver_seeds = np.random.default_rng(seed).spawn(nfrags + 1)`.
-A generator passed as `seed` is copied, so solvers never share a stream, and
-each solver's stream continues across cycles in `solver.state`.
+A generator passed as `seed` spawns a child stream, so solvers given the same
+generator still draw independently, and each solver's stream continues across
+cycles in `solver.state`.
 
 ## Tests
 

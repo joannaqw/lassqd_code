@@ -1095,7 +1095,7 @@ requires-dist = [
     { name = "ffsim", marker = "extra == 'sim'" },
     { name = "h5py" },
     { name = "mrh", editable = ".deps/mrh" },
-    { name = "numpy" },
+    { name = "numpy", specifier = ">=1.25" },
     { name = "pyscf", specifier = "==2.14.0" },
     { name = "pyscf-forge", git = "https://github.com/pyscf/pyscf-forge.git?rev=f55abdb2806697c4132c416a43ddebadf93e3b1a" },
     { name = "qiskit" },

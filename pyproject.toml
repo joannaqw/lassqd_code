@@ -12,7 +12,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.10"
 # See README.md for the staged build prerequisites.
 dependencies = [
-    "numpy",
+    "numpy>=1.25",
     # mrh's LinearOperator subclasses are incompatible with SciPy 1.18.
     "scipy<1.18",
     "h5py",

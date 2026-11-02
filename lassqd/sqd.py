@@ -152,8 +152,10 @@ class FragmentSQD:
 
     Args:
         samples_per_batch: Samples drawn for each batch.
-        seed: Seed of the random generator, or a generator whose current state is
-            copied. Each solve continues the stream where the previous one ended.
+        seed: Seed of the random generator, or a generator to spawn an
+            independent child stream from; solvers given the same generator get
+            different streams. Each solve continues the stream where the previous
+            one ended.
         sci_solver: Batch solver passed to the addon, accepting
             ``(ci_strings, h1, h2, norb, nelec)`` and returning a list of
             ``SCIResult``; None uses the addon's ``solve_sci_batch``. Configure spin
