@@ -1413,7 +1413,7 @@ requires-dist = [
     { name = "pyscf", specifier = "==2.14.0" },
     { name = "pyscf-forge", git = "https://github.com/pyscf/pyscf-forge.git?rev=f55abdb2806697c4132c416a43ddebadf93e3b1a" },
     { name = "qiskit" },
-    { name = "qiskit-addon-sqd", specifier = ">=0.13.1" },
+    { name = "qiskit-addon-sqd", specifier = ">=0.14.0" },
     { name = "qiskit-aer", marker = "extra == 'sim'" },
     { name = "qiskit-ibm-runtime", marker = "extra == 'ibm'" },
     { name = "scipy", specifier = "<1.18" },
@@ -1435,7 +1435,7 @@ docs = [
     { name = "numpy", specifier = ">=1.25" },
     { name = "pyscf", specifier = "==2.14.0" },
     { name = "qiskit" },
-    { name = "qiskit-addon-sqd", specifier = ">=0.13.1" },
+    { name = "qiskit-addon-sqd", specifier = ">=0.14.0" },
     { name = "qiskit-sphinx-theme" },
     { name = "scipy", specifier = "<1.18" },
     { name = "sphinx" },
@@ -2794,7 +2794,7 @@ wheels = [
 
 [[package]]
 name = "qiskit-addon-sqd"
-version = "0.13.1"
+version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -2810,9 +2810,9 @@ dependencies = [
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8b/f1/231d99b4ea3627ecc1e6f8a797847072df041b7dcabc8f91b1e677bd6285/qiskit_addon_sqd-0.13.1.tar.gz", hash = "sha256:6b275b0d1d3fd72c1b5496872c8217f2597898c34268d1f764e38be0a31eca77", size = 468372, upload-time = "2026-08-12T18:03:47.334Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a6/d1/49f8976c179a73e94173d02f0299118cb1d548ee5a3f2dcabc133cd52e82/qiskit_addon_sqd-0.14.0.tar.gz", hash = "sha256:f6bda4553c1a8eceae6544c38c17760f3e56b83819bde233c12b59e1388b2c0a", size = 555389, upload-time = "2026-10-08T20:27:04.16Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/de/89/45481ff89e8df362cd86956958b6f06d1ae11eabe34ec2d525148f17bb01/qiskit_addon_sqd-0.13.1-py3-none-any.whl", hash = "sha256:67ba6d23f7688e223c5d3bfc31d3f9f6ccd6e997ec71055a6b5aeb2cc0c28276", size = 36826, upload-time = "2026-08-12T18:03:45.545Z" },
+    { url = "https://files.pythonhosted.org/packages/34/ae/e161934e7ffb474588f35c085a5704cad3fbfe3d0c16901ee72e82c2beb3/qiskit_addon_sqd-0.14.0-py3-none-any.whl", hash = "sha256:4363814cd7da8121bcd12a1df892b77675a9ad7679986ab7ec55be65e56d7474", size = 50844, upload-time = "2026-10-08T20:27:02.436Z" },
 ]
 
 [[package]]

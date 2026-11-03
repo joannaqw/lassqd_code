@@ -21,8 +21,9 @@ dependencies = [
     # Supplied by the editable Git installation in docs/installation.md (commit f0077658).
     "mrh==0.1.dev5906+gf00776583",
     "qiskit",
-    # 0.13.1 includes SQD's MPI collective support.
-    "qiskit-addon-sqd>=0.13.1",
+    # 0.14.0 adds subspace policies, including trim SQD, to the MPI collective
+    # support of 0.13.1.
+    "qiskit-addon-sqd>=0.14.0",
 ]
 
 [project.optional-dependencies]
@@ -60,7 +61,7 @@ docs = [
     "h5py",
     "pyscf==2.14.0",
     "qiskit",
-    "qiskit-addon-sqd>=0.13.1",
+    "qiskit-addon-sqd>=0.14.0",
 ]
 
 [tool.uv.sources]

@@ -16,25 +16,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from inspect import signature
 from typing import Any
 
 import numpy as np
 from qiskit.primitives import BitArray
 from qiskit_addon_sqd.fermion import (
     SCIResult,
-    SCIState,
+    StandardPolicy,
     diagonalize_fermionic_hamiltonian,
 )
 from scipy.optimize import linear_sum_assignment
 
 from lassqd.records import Fragment, FragmentResult, SQDState
-
-_DEFAULT_CARRYOVER_THRESHOLD = (
-    signature(diagonalize_fermionic_hamiltonian)
-    .parameters["carryover_threshold"]
-    .default
-)
 
 # Largest deviation of ``C.T @ C`` from the identity accepted without an overlap.
 ORTHONORMAL_ATOL = 1e-8
@@ -92,8 +85,9 @@ class SQDInputs:
         nelec: ``(neleca, nelecb)``.
         options: Keyword arguments of
             :func:`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`,
-            with carryover merged into ``include_configurations`` and ``seed`` set
-            to the generator for this solve.
+            with ``policy`` always set, carryover merged into
+            ``include_configurations`` and ``seed`` set to the generator for this
+            solve.
         state: The solver state the inputs were prepared from.
         carryover_orbitals: AO coefficients of the sampling basis, recorded with
             the new carryover strings; None if carryover is disabled.
@@ -133,17 +127,23 @@ class FragmentSQD:
     Each solve runs up to ``max_iterations`` rounds of self-consistent
     configuration recovery in the fragment's sampling basis, with
     ``num_batches`` subsampled batches per round, using the addon's
-    :func:`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`. Recovery
-    uses the lowest-energy batch's occupancies from the preceding round. The
+    :func:`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`. The
+    addon's ``policy`` option decides which result each round reports: the
+    default :class:`qiskit_addon_sqd.fermion.StandardPolicy` reports the
+    lowest-energy batch, while :class:`qiskit_addon_sqd.trim.TrimPolicy` screens
+    the batches and reports one diagonalization of their merged survivors.
+    Recovery uses the reported result's occupancies from the preceding round. The
     returned energy, RDMs and carryover strings all come from the lowest-energy
-    batch across all rounds. Only the alpha one-electron Hamiltonian is used.
+    reported result across all rounds. Only the alpha one-electron Hamiltonian is
+    used.
 
-    Carryover (enabled by default): determinants whose amplitude exceeds the
-    threshold are added to every batch of the next round, and of the next solve,
-    after being mapped onto that solve's sampling basis with
-    :func:`permute_carryover`. The bases are compared in the AO basis, using the
-    fragment's LAS orbitals and the AO overlap. Set ``carryover_threshold=None``
-    or ``np.inf`` to disable carryover.
+    Carryover (enabled by default): the policy selects determinant strings that
+    are added to every batch of the next round, and of the next solve, after being
+    mapped onto that solve's sampling basis with :func:`permute_carryover`. The
+    bases are compared in the AO basis, using the fragment's LAS orbitals and the
+    AO overlap. Without a ``policy``, ``carryover_threshold`` configures the
+    default policy, and ``carryover_threshold=None`` or ``np.inf`` disables
+    carryover; a ``policy`` chooses its own carryover.
 
     The solver's continuation state, the random generator and the carryover
     strings with their basis, is ``solver.state``, a
@@ -166,8 +166,9 @@ class FragmentSQD:
             ``h0`` and states in the sampling basis.
         **options: Numerical options of
             :func:`qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`,
-            using the addon's names and defaults, including early stopping and
-            carryover. Stored in ``solver.options`` and editable between solves.
+            using the addon's names and defaults, including early stopping,
+            carryover and ``policy``, for example ``policy=TrimPolicy()``.
+            Stored in ``solver.options`` and editable between solves.
             ``include_configurations`` and ``initial_occupancies`` use the
             current sampling basis. Included configurations are merged with
             carryover before the addon's ``max_dim`` truncation.
@@ -244,21 +245,37 @@ class FragmentSQD:
     ) -> SQDInputs:
         """Resolve the SQD arguments for ``fragment``: the rank-0 setup of a solve.
 
-        Maps the carryover strings of ``state`` onto the fragment's sampling
-        basis, merges them with ``include_configurations``, and creates the
-        generator from ``state``. Arguments and errors are those of
-        :meth:`solve`.
+        Resolves the subspace policy, maps the carryover strings of ``state``
+        onto the fragment's sampling basis, merges them with
+        ``include_configurations``, and creates the generator from ``state``.
+        Arguments and errors are those of :meth:`solve`, and:
+
+        Raises:
+            ValueError: If both ``policy`` and ``carryover_threshold`` are set.
         """
         norb = fragment.norb
         options = dict(self.options)
-        carryover_threshold = options.get(
-            "carryover_threshold", _DEFAULT_CARRYOVER_THRESHOLD
-        )
-        if carryover_threshold is None:
-            carryover_threshold = np.inf
-        options["carryover_threshold"] = carryover_threshold
+        carryover = True
+        if options.get("policy") is None:
+            # The default policy, configured by carryover_threshold, where None
+            # disables carryover.
+            policy = StandardPolicy()
+            if "carryover_threshold" in options:
+                carryover_threshold = options.pop("carryover_threshold")
+                if carryover_threshold is None:
+                    carryover_threshold = np.inf
+                carryover = carryover_threshold != np.inf
+                policy = StandardPolicy(carryover_threshold=carryover_threshold)
+            options["policy"] = policy
+        elif "carryover_threshold" in options:
+            # Even None, which the addon accepts with a policy, but which here
+            # would read as disabling carryover.
+            raise ValueError(
+                "carryover_threshold configures the default policy only; set the "
+                "carryover of a policy on the policy itself"
+            )
         carryover_orbitals = None
-        if carryover_threshold != np.inf:
+        if carryover:
             carryover_orbitals = fragment.sampling_orbitals
             if ao_ovlp is None:
                 ao_ovlp = np.eye(len(carryover_orbitals))
@@ -295,9 +312,10 @@ class FragmentSQD:
             The fragment energy including ``h0`` with LAS-basis RDMs, and the state
             for the next solve.
         """
-        carryover_threshold = inputs.options["carryover_threshold"]
-        if carryover_threshold != np.inf:
-            carryover_strings = _carryover(best.sci_state, carryover_threshold)
+        if inputs.carryover_orbitals is not None:
+            carryover_strings = inputs.options["policy"].select_carryover(
+                best, symmetrize_spin=inputs.options.get("symmetrize_spin", False)
+            )
             carryover_orbitals = inputs.carryover_orbitals
         else:
             carryover_strings = inputs.state.carryover_strings
@@ -361,12 +379,3 @@ def _include_carryover(
         return strings
     include_a, include_b = include if isinstance(include, tuple) else (include, include)
     return np.union1d(include_a, strings[0]), np.union1d(include_b, strings[1])
-
-
-def _carryover(
-    sci_state: SCIState, carryover_threshold: float
-) -> tuple[np.ndarray, np.ndarray]:
-    """Alpha and beta strings of the determinants with ``|amplitude| >= carryover_threshold``."""
-    amplitudes = np.abs(sci_state.amplitudes)
-    alpha_idx, beta_idx = np.nonzero(amplitudes >= carryover_threshold)
-    return sci_state.ci_strs_a[alpha_idx], sci_state.ci_strs_b[beta_idx]

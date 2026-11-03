@@ -12,6 +12,7 @@ from qiskit_addon_sqd.fermion import (
     solve_sci,
     solve_sci_batch,
 )
+from qiskit_addon_sqd.trim import TrimPolicy
 
 from lassqd import (
     Fragment,
@@ -218,6 +219,47 @@ def test_fragment_sqd_carryover_persists_between_calls(fragment):
     counts = {next(iter(counts)): 1}
     e2 = solve_hamiltonian(solver, counts, norb, nelec, h0, h1s, h2).e_tot
     assert np.isclose(e1, e2)
+
+
+def test_fragment_sqd_trim_policy_carries_over_its_selection(fragment, iterations):
+    norb, nelec, h0, h1s, h2 = fragment
+    policy = TrimPolicy(trim_ratio=1.0, carryover_ratio=1.0)
+    solver = FragmentSQD(
+        50,
+        max_iterations=2,
+        num_batches=2,
+        seed=0,
+        policy=policy,
+        callback=iterations.append,
+    )
+    counts = full_counts(norb, nelec)
+    result = solve_hamiltonian(solver, counts, norb, nelec, h0, h1s, h2)
+    exact = h0 + fci_energy(norb, nelec, h1s[0], h2, 0.75)
+    assert np.isclose(result.e_tot, exact)
+    # Each round reports one result: the diagonalization of the merged batches.
+    assert summarize(iterations)["e_hist"].shape == (2, 1)
+    # The policy selects the carryover from the returned state.
+    sci_state = SCIState(
+        result.amplitudes, result.ci_strs_a, result.ci_strs_b, norb, nelec
+    )
+    expected = policy.select_carryover(SCIResult(result.e_tot, sci_state, None))
+    for strings, expected_strings in zip(solver.state.carryover_strings, expected):
+        assert np.array_equal(strings, expected_strings)
+
+    # Second solve: only one determinant is sampled, the rest must come from carryover.
+    counts = {next(iter(counts)): 1}
+    result = solve_hamiltonian(solver, counts, norb, nelec, h0, h1s, h2)
+    assert np.isclose(result.e_tot, exact)
+
+
+@pytest.mark.parametrize("carryover_threshold", [None, 1e-3])
+def test_fragment_sqd_policy_owns_carryover_threshold(fragment, carryover_threshold):
+    norb, nelec, h0, h1s, h2 = fragment
+    solver = FragmentSQD(
+        50, policy=TrimPolicy(), carryover_threshold=carryover_threshold
+    )
+    with pytest.raises(ValueError, match="carryover_threshold"):
+        solve_hamiltonian(solver, full_counts(norb, nelec), norb, nelec, h0, h1s, h2)
 
 
 @pytest.mark.parametrize(
