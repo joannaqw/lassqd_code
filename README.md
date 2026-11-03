@@ -45,3 +45,9 @@ for pip, macOS, the IBM extra, and running the notebook.
 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 uv run python -m pytest
 uv run --group docs sphinx-build docs docs/_build/html
 ```
+
+## License
+
+LASSQD is licensed under the [Apache License 2.0](LICENSE). It depends on
+[mrh](https://github.com/MatthewRHermes/mrh), which is licensed under the
+[GNU General Public License v2.0 or later](https://github.com/MatthewRHermes/mrh/blob/HEAD/LICENSE).
