@@ -144,14 +144,16 @@ solved outside mrh and independently of each other.
 | --- | --- |
 | [lassqd.records](lassqd/records.py) | `LASState`, `Fragment`, `Embedding`, `FragmentSamples`, `SQDState`, `FragmentResult`: the data passed between stages, with HDF5 `save`/`load` |
 | [lassqd.las](lassqd/las.py) | `LASSCF`, `initial_state`, `capture_embedding`, `replay_orbital_step`: the only interface to mrh |
-| [lassqd.circuits](lassqd/circuits.py) | `build_circuits`, `submit_circuits`, `collect_samples` |
+| [lassqd.circuits](lassqd/circuits.py) | `FragmentCircuits`, `build_circuits`, `submit_circuits`, `collect_samples` |
 | [lassqd.sqd](lassqd/sqd.py) | `FragmentSQD`: configuration recovery, carryover and the fragment solve |
 | [lassqd.hybrid](lassqd/hybrid.py) | `solve_fragments`, `update_orbitals`, and the serial driver `run_lassqd` |
 | [lassqd.fragment](lassqd/fragment.py) | `fragment_rohf` and `sampling_basis_rohf`: the fragment ROHF basis |
 | [lassqd.pdft](lassqd/pdft.py) | `lassqd_pdft_energy`: LAS-PDFT on a LAS state |
 
 `lassqd.records` imports only NumPy and h5py, so stored records can be read
-without mrh, PySCF or Qiskit installed.
+without mrh, PySCF or Qiskit installed. `FragmentCircuits` is saved and loaded
+the same way, with the circuits in QPY; it needs Qiskit, but not mrh, PySCF or
+qiskit-addon-sqd.
 
 ### Usage
 
@@ -239,6 +241,7 @@ state = initial_state(las, mo_coeff)
 for cycle in range(max_cycles):
     embedding = capture_embedding(las, state)  # fragment Hamiltonians and bases
     circuits = build_circuits(embedding, prepare_fragment, groups=[[0], [1]])
+    circuits.save(f"circuits_{cycle}.h5")
     job = submit_circuits(sampler, circuits, shots=100_000)
     samples = collect_samples(circuits, job.result(), job_ids=job.job_id())
     samples.save(f"samples_{cycle}.h5")
@@ -256,8 +259,10 @@ for cycle in range(max_cycles):
   RDMs set each fragment's embedding in the others; `run_lassqd` continues from
   the previous cycle's RDMs, as classical LASSCF does.
 - `collect_samples` accepts the pub results of any job that ran the circuits,
-  including one recovered later by job ID, or results combined from several jobs
-  with `submit_circuits(..., indices=...)`.
+  including one recovered later by job ID, with the circuits from
+  `FragmentCircuits.load(...)`, or results combined from several jobs with
+  `submit_circuits(..., indices=...)`. Save compiled circuits: QPY loads native
+  ffsim gates as opaque gates, which `FfsimSampler` cannot run.
 - `update_orbitals` re-enters mrh at the same state with kernels that check each
   Hamiltonian against the captured one and return the stored fragment RDMs. mrh
   then computes the LAS energy, takes one orbital step and canonicalizes.

@@ -3,7 +3,15 @@ import sys
 
 from conftest import full_counts
 
-from lassqd import FragmentSamples, FragmentSQD, capture_embedding, initial_state
+from qiskit import QuantumCircuit
+
+from lassqd import (
+    FragmentSamples,
+    FragmentSQD,
+    build_circuits,
+    capture_embedding,
+    initial_state,
+)
 
 HEAVY = ("mrh", "pyscf", "qiskit", "qiskit_addon_sqd")
 
@@ -35,6 +43,28 @@ from lassqd import records
 for name in {list(records)!r}:
     getattr(records, name).load({str(tmp_path)!r} + f"/{{name}}.h5")
 loaded = sorted(m for m in {HEAVY!r} if m in sys.modules)
+assert not loaded, loaded
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_circuits_load_without_mrh_or_sqd(tmp_path, h6):
+    # A QPU gateway loads the circuits, submits them and collects the samples.
+    def x_builder(fragment):
+        circuit = QuantumCircuit(2 * fragment.norb)
+        circuit.x(0)
+        return circuit
+
+    _, las, mo = h6
+    embedding = capture_embedding(las, initial_state(las, mo))
+    path = tmp_path / "circuits.h5"
+    build_circuits(embedding, x_builder).save(path)
+    code = f"""
+import sys
+from lassqd.circuits import FragmentCircuits, collect_samples
+
+FragmentCircuits.load({str(path)!r})
+loaded = sorted(m for m in ("mrh", "pyscf", "qiskit_addon_sqd") if m in sys.modules)
 assert not loaded, loaded
 """
     subprocess.run([sys.executable, "-c", code], check=True)

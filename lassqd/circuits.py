@@ -3,27 +3,39 @@
 :func:`build_circuits` builds one circuit per fragment group of an
 :class:`lassqd.records.Embedding`, :func:`submit_circuits` samples some or all of
 them in one sampler job, and :func:`collect_samples` splits the pub results into
-per-fragment counts.
+per-fragment counts. :class:`FragmentCircuits` is saved and loaded like the
+records of :mod:`lassqd.records`, but needs Qiskit.
 """
 
 from __future__ import annotations
 
+import io
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
+import numpy as np
+from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, qpy
 from qiskit.primitives import BasePrimitiveJob, BaseSamplerV2, SamplerPubResult
 from qiskit.transpiler import PassManager
 
-from lassqd.records import Embedding, Fragment, FragmentSamples
+from lassqd.records import Embedding, Fragment, FragmentSamples, _Record
+
+if TYPE_CHECKING:
+    import h5py
 
 # ``circuit_builder(fragment) -> circuit``; see build_circuits for the contract.
 CircuitBuilder = Callable[[Fragment], QuantumCircuit]
 
 
 @dataclass
-class FragmentCircuits:
+class FragmentCircuits(_Record):
     """Measured, compiled circuits for one embedding, from :func:`build_circuits`.
+
+    ``save`` stores the circuits in QPY, so load them with the same Qiskit
+    version or a newer one. Save compiled circuits: QPY loads native ffsim gates
+    as opaque gates, which ``FfsimSampler`` cannot run.
 
     Attributes:
         embedding: The fragment problems the circuits were built from.
@@ -35,6 +47,25 @@ class FragmentCircuits:
     embedding: Embedding
     circuits: list[QuantumCircuit]
     output_registers: list[tuple[int, str]]
+
+    def _write(self, group: h5py.Group) -> None:
+        self._write_child(group, "embedding", self.embedding)
+        buffer = io.BytesIO()
+        qpy.dump(self.circuits, buffer)
+        group.create_dataset("circuits", data=np.void(buffer.getvalue()))
+        group.attrs["output_registers"] = json.dumps(self.output_registers)
+
+    @classmethod
+    def _read(cls, group: h5py.Group) -> FragmentCircuits:
+        circuits = qpy.load(io.BytesIO(group["circuits"][()].tobytes()))
+        return cls(
+            cls._read_child(group, "embedding", Embedding),
+            list(circuits),
+            [
+                (int(index), name)
+                for index, name in json.loads(group.attrs["output_registers"])
+            ],
+        )
 
 
 def build_circuits(

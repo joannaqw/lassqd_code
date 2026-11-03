@@ -1,7 +1,8 @@
 """Records passed between the LASSQD stages.
 
 The records import only NumPy and h5py, so they can be read and written without
-mrh, PySCF or Qiskit installed.
+mrh, PySCF or Qiskit installed. The circuits record,
+:class:`lassqd.circuits.FragmentCircuits`, also needs Qiskit.
 """
 
 from __future__ import annotations
