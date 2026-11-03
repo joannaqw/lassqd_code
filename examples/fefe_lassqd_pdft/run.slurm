@@ -14,7 +14,7 @@
 ulimit -s unlimited
 export OMP_NUM_THREADS=4
  
-# The repository's virtual environment (see README.md); run from this directory.
+# The repository's virtual environment (see docs/installation.md); run from this directory.
 source ../../.venv/bin/activate
 # Clear these so no other copy of PySCF or mrh on PYTHONPATH can shadow them.
 export PYTHONPATH=

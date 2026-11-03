@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
-# See README.md for the staged build prerequisites.
+# See docs/installation.md for the staged build prerequisites.
 dependencies = [
     "numpy>=1.25",
     # mrh's LinearOperator subclasses are incompatible with SciPy 1.18.
@@ -18,7 +18,7 @@ dependencies = [
     "h5py",
     "pyscf==2.14.0",
     "pyscf-forge @ git+https://github.com/pyscf/pyscf-forge.git@f55abdb2806697c4132c416a43ddebadf93e3b1a",
-    # Supplied by the editable Git installation in README.md (commit f0077658).
+    # Supplied by the editable Git installation in docs/installation.md (commit f0077658).
     "mrh==0.1.dev5906+gf00776583",
     "qiskit",
     # 0.13.1 includes SQD's MPI collective support.
@@ -29,6 +29,10 @@ dependencies = [
 # Local circuit simulation, as in the tutorial and examples.
 sim = ["ffsim", "qiskit-aer"]
 ibm = ["qiskit-ibm-runtime"]
+
+[project.urls]
+Documentation = "https://joannaqw.github.io/lassqd_code/"
+Repository = "https://github.com/joannaqw/lassqd_code"
 
 [tool.setuptools]
 packages = ["lassqd"]
@@ -44,6 +48,19 @@ dev = [
     "pytest>=9.1.1",
     "qiskit-aer",
     "ruff>=0.16.9",
+]
+# Sphinx and the runtime dependencies autodoc imports. docs/conf.py mocks mrh,
+# so this group installs without the native builds or the project itself.
+docs = [
+    "myst-nb",
+    "qiskit-sphinx-theme",
+    "sphinx",
+    "numpy>=1.25",
+    "scipy<1.18",
+    "h5py",
+    "pyscf==2.14.0",
+    "qiskit",
+    "qiskit-addon-sqd>=0.13.1",
 ]
 
 [tool.uv.sources]

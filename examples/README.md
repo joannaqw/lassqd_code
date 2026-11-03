@@ -3,7 +3,7 @@
 Both examples treat the FeFe complex in `fefe.xyz` (6-31G, charge +4) as two Fe
 fragments with opposite spin polarization, `((4, 2), (2, 4))`, and run hybrid LASSQD
 with LUCJ circuits (`lassqd.run_lassqd`). Run each script from its own directory;
-see the root [installation instructions](../README.md#installation) for setup.
+see the [installation instructions](https://joannaqw.github.io/lassqd_code/installation.html) for setup.
 The [PDFT Slurm script](fefe_lassqd_pdft/run.slurm) shows one cluster's setup;
 adapt its account, partition, and environment activation to your system.
 

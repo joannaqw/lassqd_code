@@ -2,7 +2,7 @@
 
 Like LAS-PDFT, the on-top energy is evaluated once, on a converged LAS wave
 function: a :class:`lassqd.records.LASState`, such as ``result.state`` after
-:func:`lassqd.run_lassqd`. Only root 0 of the fragment RDMs is used.
+:func:`lassqd.hybrid.run_lassqd`. Only root 0 of the fragment RDMs is used.
 """
 
 from __future__ import annotations

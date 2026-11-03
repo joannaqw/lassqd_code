@@ -416,7 +416,7 @@ class Embedding(_Record):
 
 @dataclass(frozen=True, eq=False)
 class FragmentSamples(_Record):
-    """One cycle's per-fragment measurements, from :func:`lassqd.collect_samples`.
+    """One cycle's per-fragment measurements, from :func:`lassqd.circuits.collect_samples`.
 
     Attributes:
         embedding: The fragment problems the circuits were built from. The
