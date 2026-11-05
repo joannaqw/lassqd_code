@@ -75,7 +75,7 @@ install with `uv sync --extra ibm` and run with
 
 ## Running the notebook
 
-The [H₁₂ tutorial](lassqd.ipynb) uses Fulqrum for the SQD batch solver.
+The [H₂₄ tutorial](lassqd.ipynb) uses Fulqrum for the SQD batch solver.
 Fulqrum and ipykernel are included in the `dev` dependency group, which uv installs
 by default. With pip, install that group explicitly as shown below.
 

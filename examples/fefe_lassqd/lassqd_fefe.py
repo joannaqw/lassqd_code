@@ -1,5 +1,5 @@
 """Hybrid LASSQD for the FeFe complex, (6e,10o) per Fe, with LUCJ circuits sampled
-classically with ffsim and determinant carryover between cycles.
+classically with ffsim, trim SQD, and determinant carryover between cycles.
 
 """
 
@@ -13,6 +13,7 @@ from pyscf import cc, fci, gto, lib, scf
 from pyscf.mcscf import avas
 from qiskit import QuantumCircuit
 from qiskit_addon_sqd.fermion import SCIResult, SCIState
+from qiskit_addon_sqd.trim import TrimPolicy
 
 from lassqd import (
     LASSCF,
@@ -108,7 +109,11 @@ def solve_sci_batch(
 
 
 def record_iteration(history: dict[str, list], results: list[SCIResult]) -> None:
-    """Keep small summaries of each batch, without retaining its wave function."""
+    """Keep small summaries of each round's results, without their wave functions.
+
+    With ``TrimPolicy`` a round reports one result, the diagonalization of the
+    merged batches.
+    """
     best = min(results, key=lambda result: result.energy)
     rows = {
         "e_hist": [r.energy for r in results],
@@ -173,7 +178,7 @@ solvers = [
         num_batches=15,
         samples_per_batch=170,
         sci_solver=solve_sci_batch,
-        carryover_threshold=1e-3,
+        policy=TrimPolicy(carryover_threshold=1e-3),
         callback=partial(record_iteration, histories[ifrag]),
     )
     for ifrag in range(las.nfrags)

@@ -33,6 +33,7 @@ from functools import partial
 
 import ffsim
 from qiskit_addon_sqd.fermion import solve_sci_batch
+from qiskit_addon_sqd.trim import TrimPolicy
 
 from lassqd import LASSCF, FragmentSQD, initial_state, lassqd_pdft_energy, run_lassqd
 
@@ -42,6 +43,7 @@ solvers = [
         50,
         max_iterations=6,
         num_batches=15,
+        policy=TrimPolicy(),
         sci_solver=partial(solve_sci_batch, spin_sq=2.0, max_cycle=200, tol=1e-12),
         seed=seed,
     )
@@ -141,18 +143,35 @@ uninterrupted one bit for bit.
 solves a fragment with
 `qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian`, whose names and
 defaults the numerical `options` use. It runs up to `max_iterations` rounds of
-configuration recovery, using the best batch's occupancies, and returns the
-energy and RDMs of the lowest-energy batch across all rounds. Circuits and SQD
-use only the alpha one-electron integrals, also when the embedding is
-spin-dependent.
+configuration recovery, using the occupancies of the result the previous round
+reported, and returns the energy and RDMs of the lowest-energy reported result
+across all rounds. Circuits and SQD use only the alpha one-electron integrals,
+also when the embedding is spin-dependent.
 
 - **State.** `solver.state` is an `SQDState`: the random generator and the
   carryover strings with their orbital basis. `solve` replaces it only when a
   solve succeeds; assign an earlier state to repeat a solve.
-- **Carryover.** Determinants with amplitude above `carryover_threshold` are
-  included in every later round and solve, mapped onto the new sampling basis by
-  comparing orbitals in the AO basis. Set `carryover_threshold=None` to disable
-  it.
+- **Policy.** The addon's `policy` option decides how each round turns
+  samples into subspaces and which result it reports. The default,
+  `StandardPolicy`, diagonalizes `num_batches` independently subsampled batches
+  and reports the lowest-energy one. `policy=TrimPolicy()`, from
+  `qiskit_addon_sqd.trim`, runs
+  [trim SQD](https://qiskit.github.io/qiskit-addon-sqd/apidocs/qiskit_addon_sqd.trim.html):
+  it divides one pool of samples into `num_batches` disjoint batches,
+  diagonalizes each, keeps each batch's highest-weight strings (`trim_ratio`),
+  and diagonalizes their union. That merged result is the one reported, so a
+  round costs `num_batches + 1` diagonalizations and the callback receives a
+  single result. Bound the merged subspace with `max_dim` or the policy's
+  `max_strings_per_trim`. The default ratios keep a tenth of each batch and
+  carry over a tenth of the merged strings; the [tutorial](lassqd.ipynb) raises
+  them, since that keeps too little of its 12-orbital fragments.
+- **Carryover.** The policy selects the strings included in every later round
+  and solve, mapped onto the new sampling basis by comparing orbitals in the AO
+  basis. With the default policy these are the strings of determinants with
+  amplitude above `carryover_threshold`; set `carryover_threshold=None` to
+  disable carryover. A `TrimPolicy` takes its own `carryover_threshold` and
+  further keeps a `carryover_ratio` of the surviving strings; passing
+  `carryover_threshold` to `FragmentSQD` alongside a `policy` is an error.
 - **Batch solver.** `sci_solver(ci_strings, h1, h2, norb, nelec)` returns a
   list of `SCIResult`; it controls spin constraints and Davidson settings. The
   default is the addon's `solve_sci_batch` without a spin penalty. The

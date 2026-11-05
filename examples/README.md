@@ -26,6 +26,9 @@ submits the two native LUCJ circuits separately in one sampler job without
 transpilation. Its `solve_sci_batch` function solves 10 Davidson roots per batch
 and retains the first, with the fragment's minimum-spin constraint, 200 maximum
 cycles and `1e-16` tolerance. It is passed to `FragmentSQD` as `sci_solver`.
+`FragmentSQD` runs trim SQD, `policy=TrimPolicy(carryover_threshold=1e-3)`: each
+round screens 15 disjoint batches, keeps the highest-weight tenth of each batch's
+strings, and diagonalizes their union.
 
 - Inputs: only `fefe.xyz`. The script runs ROHF and an Fe 3d AVAS guess to build
   the initial orbitals.
@@ -35,9 +38,9 @@ cycles and `1e-16` tolerance. It is passed to `FragmentSQD` as `sci_solver`.
     `lassqd.SQDState` with its random generator and carryover strings.
   - `data_carryover_frag{0,1}/sci_vec`: the selected SCI state, in the fragment's
     sampling basis.
-  - `data_carryover_frag{0,1}/*_hist.npy`: per-round batch summaries collected
-    by the SQD callback (energies, spin, subspace dimensions, alpha/beta string
-    counts, and the lowest-energy batch's occupancies).
+  - `data_carryover_frag{0,1}/*_hist.npy`: per-round summaries collected by the
+    SQD callback (energies, spin, subspace dimensions, alpha/beta string counts,
+    and occupancies) of each round's merged trim-SQD diagonalization.
 
 ## fefe_lassqd_pdft
 
@@ -56,7 +59,8 @@ symlink `RDMS/latest` to it, so an interrupted write never replaces the last
 whole checkpoint. When `RDMS/latest` exists, the next run continues from it;
 otherwise it starts from the localized AVAS guess.
 Its `sci_solver` is the addon's `solve_sci_batch`, configured with a triplet spin
-target (`spin_sq=2`), 200 maximum Davidson cycles and `1e-12` tolerance.
+target (`spin_sq=2`), 200 maximum Davidson cycles and `1e-12` tolerance, and
+`FragmentSQD` runs trim SQD with the default `TrimPolicy()`.
 
 [pdft_from_rdms.py](fefe_lassqd_pdft/pdft_from_rdms.py) (what `run.slurm` runs): the
 SQD-PDFT energy of the wave function saved in `RDMS/latest/casdm.h5`, without new
