@@ -1,5 +1,5 @@
-"""Hybrid LASSQD for the FeFe complex, (6e,5o) per Fe, on IBM Quantum hardware with
-trim SQD, followed by an SQD-PDFT (tPBE) energy.
+"""Hybrid LASSQD for the FeFe complex, (6e,5o) per Fe, on IBM Quantum hardware,
+followed by an SQD-PDFT (tPBE) energy.
 
 Save an IBM Quantum account first (``QiskitRuntimeService.save_account(...)``).
 Each cycle writes a checkpoint, the current LAS wave function (orbitals +
@@ -22,7 +22,6 @@ from pyscf.mcscf import avas
 from qiskit import QuantumCircuit
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_addon_sqd.fermion import solve_sci_batch
-from qiskit_addon_sqd.trim import TrimPolicy
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2, Session
 
 from lassqd import (
@@ -83,7 +82,6 @@ solvers = [
         max_iterations=6,
         num_batches=15,
         samples_per_batch=50,
-        policy=TrimPolicy(),
         sci_solver=partial(solve_sci_batch, spin_sq=2.0, max_cycle=200, tol=1e-12),
     )
     for ifrag in range(las.nfrags)

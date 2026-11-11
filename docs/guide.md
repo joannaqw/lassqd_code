@@ -33,7 +33,6 @@ from functools import partial
 
 import ffsim
 from qiskit_addon_sqd.fermion import solve_sci_batch
-from qiskit_addon_sqd.trim import TrimPolicy
 
 from lassqd import LASSCF, FragmentSQD, initial_state, lassqd_pdft_energy, run_lassqd
 
@@ -43,7 +42,6 @@ solvers = [
         50,
         max_iterations=6,
         num_batches=15,
-        policy=TrimPolicy(),
         sci_solver=partial(solve_sci_batch, spin_sq=2.0, max_cycle=200, tol=1e-12),
         seed=seed,
     )
@@ -164,7 +162,12 @@ also when the embedding is spin-dependent.
   single result. Bound the merged subspace with `max_dim` or the policy's
   `max_strings_per_trim`. The default ratios keep a tenth of each batch and
   carry over a tenth of the merged strings; the [tutorial](lassqd.ipynb) raises
-  them, since that keeps too little of its 10-orbital fragments.
+  them, since that keeps too little of its 10-orbital fragments. Trim SQD pays
+  off when the samples hold many more configurations than `max_dim` admits.
+  When they hold only a few, or already span the fragment space, as in the
+  FeFe examples, it has nothing to screen; with fewer distinct samples than
+  `num_batches`, some of its disjoint batches are empty, which the batch
+  solver rejects.
 - **Carryover.** The policy selects the strings included in every later round
   and solve, mapped onto the new sampling basis by comparing orbitals in the AO
   basis. With the default policy these are the strings of determinants with
