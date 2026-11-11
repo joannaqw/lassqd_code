@@ -13,8 +13,8 @@ fragment, solves each fragment with SQD on its samples, and then replays the
 fragment RDMs into mrh, which takes one LASSCF orbital step. The fragments are
 solved outside mrh and independently of each other.
 
-Start with the [tutorial](lassqd.ipynb) to build an H₂₄ system from scratch, run
-two H₁₂ fragments with local ffsim sampling, trim SQD and a Fulqrum batch
+Start with the [tutorial](lassqd.ipynb) to build an H₂₀ system from scratch, run
+two H₁₀ fragments with local ffsim sampling, trim SQD and a Fulqrum batch
 solver, and compare the result with classical LASSCF.
 
 ```{toctree}

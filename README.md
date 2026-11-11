@@ -8,7 +8,7 @@ LASSQD combines [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) w
 (`mrh.my_pyscf.mcscf.lasscf_rdm`). Both are installed as dependencies.
 
 **Documentation:** <https://joannaqw.github.io/lassqd_code/>. It covers
-installation, the H₂₄ tutorial, the user guide and the API reference.
+installation, the H₂₀ tutorial, the user guide and the API reference.
 
 ## Quick start
 
@@ -33,7 +33,7 @@ for pip, macOS, the IBM extra, and running the notebook.
 | Path | Contents |
 | --- | --- |
 | [lassqd/](lassqd/) | LASSQD package |
-| [docs/](docs/) | Sphinx documentation, including the [H₂₄ tutorial](docs/lassqd.ipynb) |
+| [docs/](docs/) | Sphinx documentation, including the [H₂₀ tutorial](docs/lassqd.ipynb) |
 | [examples/](examples/README.md) | FeFe calculations with classical sampling, IBM hardware, and SQD-PDFT |
 | [tests/](tests/) | pytest tests |
 | [pyproject.toml](pyproject.toml) | Package metadata, dependencies, and development tools |

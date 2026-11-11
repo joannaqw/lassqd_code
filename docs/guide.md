@@ -164,7 +164,7 @@ also when the embedding is spin-dependent.
   single result. Bound the merged subspace with `max_dim` or the policy's
   `max_strings_per_trim`. The default ratios keep a tenth of each batch and
   carry over a tenth of the merged strings; the [tutorial](lassqd.ipynb) raises
-  them, since that keeps too little of its 12-orbital fragments.
+  them, since that keeps too little of its 10-orbital fragments.
 - **Carryover.** The policy selects the strings included in every later round
   and solve, mapped onto the new sampling basis by comparing orbitals in the AO
   basis. With the default policy these are the strings of determinants with
