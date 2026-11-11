@@ -243,11 +243,14 @@ def replay_orbital_step(
     """Take one LASSCF orbital step from ``embedding.state`` with solved fragments.
 
     ``las.kernel`` is entered at the embedding's orbitals and *starting* RDMs,
-    with ``max_cycle_macro=1`` and ``max_cycle_rdmjk=0``. Each fragment kernel
-    checks that mrh passes the captured Hamiltonian and returns that fragment's
-    stored result; mrh then computes the coupled LAS energy, takes one orbital
-    step and canonicalizes. ``las.fciboxes``, ``las.max_cycle_macro`` and
-    ``las.max_cycle_rdmjk`` are restored afterwards, including on failure.
+    with ``max_cycle_macro=1`` and ``max_cycle_rdmjk=0``, and with
+    ``conv_tol_grad=0`` so that mrh never judges the cycle converged and skips
+    the orbital step; whether zero RDM-JK cycles count as converged is only an
+    mrh convention. Each fragment kernel checks that mrh passes the captured
+    Hamiltonian and returns that fragment's stored result; mrh then computes
+    the coupled LAS energy, takes one orbital step and canonicalizes.
+    ``las.fciboxes``, ``las.max_cycle_macro`` and ``las.max_cycle_rdmjk`` are
+    restored afterwards, including on failure.
 
     Args:
         las: RDM-based LASSCF object, set up like the one the embedding was
@@ -263,7 +266,9 @@ def replay_orbital_step(
         ValueError: If mrh passes a Hamiltonian other than the captured one, or
             if ``las`` was built without the density fitting its mean field
             uses; see :func:`LASSCF`.
-        RuntimeError: If mrh does not visit every fragment exactly once.
+        RuntimeError: If mrh does not visit every fragment exactly once, or if
+            it nevertheless judges the state converged and skips the orbital
+            step.
     """
     _check_density_fitting(las)
     fragments = embedding.fragments
@@ -290,11 +295,17 @@ def replay_orbital_step(
             np.array(state.mo_coeff),
             casdm1frs=_writable(state.casdm1frs),
             casdm2fr=_writable(state.casdm2fr),
+            conv_tol_grad=0,
         )
     finally:
         las.fciboxes, las.max_cycle_macro, las.max_cycle_rdmjk = saved
     if visits != [1] * len(fragments):
         raise RuntimeError(f"mrh visited the fragments {visits} times")
+    # mrh skips the orbital step of a macrocycle it judges converged. With
+    # conv_tol_grad=0 it cannot, because LASSCF has no gx gradient, so this only
+    # guards against mrh changing its convergence test.
+    if las.converged:
+        raise RuntimeError("mrh judged the state converged and took no orbital step")
     return las.e_tot, LASState(las.mo_coeff, tuple(las.casdm1frs), tuple(las.casdm2fr))
 
 
