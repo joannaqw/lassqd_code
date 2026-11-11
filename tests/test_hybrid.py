@@ -10,6 +10,7 @@ from ffsim.qiskit import (
     UCJOpSpinUnbalancedJW,
 )
 from ffsim.random import random_ucj_op_spin_unbalanced
+from mrh.my_pyscf.mcscf import lasscf_rdm
 from mrh.my_pyscf.mcscf.lasci import _DFLASCI
 from mrh.my_pyscf.mcscf.lasscf_rdm import LASSCFNoSymm
 from pyscf import gto, scf
@@ -331,6 +332,25 @@ def test_replay_rejects_a_different_hamiltonian(h6):
     mismatched = Embedding(other_rdms, embedding.fragments, embedding.ao_ovlp)
     with pytest.raises(ValueError, match="differs from the captured one"):
         replay_orbital_step(las, mismatched, results)
+
+
+def test_replay_steps_even_if_zero_rdmjk_cycles_count_as_converged(h6):
+    _, las, mo = h6
+    samples = sample(las, initial_state(las, mo))
+    results = solve_fragments(samples, make_solvers(las))
+    e_tot, state = replay_orbital_step(las, samples.embedding, results)
+    # mrh judging zero rdm-jk cycles converged, at a gradient below tolerance.
+    real_cycle = lasscf_rdm.rdm_cycle
+
+    def converged_cycle(*args, **kwargs):
+        return (*real_cycle(*args, **kwargs)[:3], True)
+
+    las.conv_tol_grad = np.inf
+    with patch.object(lasscf_rdm, "rdm_cycle", converged_cycle):
+        again_e_tot, again = replay_orbital_step(las, samples.embedding, results)
+    assert not las.converged
+    assert again_e_tot == e_tot
+    assert np.array_equal(again.mo_coeff, state.mo_coeff)
 
 
 @pytest.mark.parametrize(
