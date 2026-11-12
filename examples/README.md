@@ -1,11 +1,18 @@
 # Examples
 
-Both examples treat the FeFe complex in `fefe.xyz` (6-31G, charge +4) as two Fe
+The two FeFe examples treat the complex in `fefe.xyz` (6-31G, charge +4) as two Fe
 fragments with opposite spin polarization, `((4, 2), (2, 4))`, and run hybrid LASSQD
-with LUCJ circuits (`lassqd.run_lassqd`). Run each script from its own directory;
+with LUCJ circuits (`lassqd.run_lassqd`) in a single process. Run each script from
+its own directory;
 see the [installation instructions](https://joannaqw.github.io/lassqd_code/installation.html) for setup.
 The [PDFT Slurm script](fefe_lassqd_pdft/run.slurm) shows one cluster's setup;
 adapt its account, partition, and environment activation to your system.
+
+The third example, [hchain_lassqd_prefect](hchain_lassqd_prefect/README.md), takes
+the same kind of calculation apart instead: it drives the library's stage
+functions as a Prefect flow whose stages exchange only HDF5 records, with QCSC
+launching one Slurm job per stage. It is a standalone project with its own
+`pyproject.toml` and `uv.lock`, and needs Python 3.11 or newer.
 
 Each script defines its own `prepare_fragment(fragment)` and passes it as the
 required `circuit_builder` argument. These examples initialize one LUCJ layer
@@ -62,3 +69,36 @@ target (`spin_sq=2`), 200 maximum Davidson cycles and `1e-12` tolerance.
 SQD-PDFT energy of the wave function saved in `RDMS/latest/casdm.h5`, without new
 sampling.
 Run `lassqd_fefe_ibm.py` first to create that file.
+
+## hchain_lassqd_prefect
+
+[hchain_lassqd_prefect/](hchain_lassqd_prefect/README.md): the H20 chain of the
+[tutorial](../docs/lassqd.ipynb) — two H10 (10e,10o) singlets in STO-6G — run as a
+distributed workflow rather than a script. Each macrocycle is five stages
+(capture, prepare circuits, sample, one solve per fragment, replay and commit)
+that communicate only through records, so a stage can be rerun from stored
+inputs and the fragment solves run concurrently in their own Slurm jobs. Each
+solve uses one node; a collective MPI solve across several nodes per fragment is
+not implemented, and the README says where it would attach. Sampling runs in the
+flow process through QCSC's Qiskit Runtime sampler, Aer, or `FfsimSampler`.
+
+`serial.py` runs the same stages in one process, or as subprocesses, as the
+bitwise reference for the orchestrated run, and `compare_runs.py` reports the
+first divergence between two run directories.
+
+- Inputs: none beyond the code. `settings.py` holds the geometry, active spaces,
+  SQD settings and the random-stream contract; `blocks.scc.toml` holds one
+  cluster's Slurm configuration; the `params.*.json` files select the sampler,
+  the compilation target and the execution target.
+- Outputs, under the run directory, one subdirectory per macrocycle:
+  - `state.h5`, `next_state.h5`: the LAS wave function entering and leaving the
+    macrocycle, each a `lassqd.LASState`.
+  - `embedding.h5`, `circuits.h5`, `samples.h5`: the captured fragment problems,
+    the compiled circuits and the measured counts.
+  - `result_f{i}.h5`, `sqd_state_f{i}.h5`, `solve_f{i}.json`: each fragment's
+    `lassqd.FragmentResult`, its `lassqd.SQDState` and what its solve observed.
+  - `cycle.json`, `energies.csv`, `summary.json`: the committed energy of each
+    macrocycle and the run's outcome.
+  - `jobs/<stage>/`: each logical job's rendered script, its logs and its result
+    manifest, which lists every record it produced with that record's size and
+    SHA-256.

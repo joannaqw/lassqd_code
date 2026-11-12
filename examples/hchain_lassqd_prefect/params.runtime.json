@@ -1,0 +1,13 @@
+{
+  "run_dir": "~/runs/lassqd-runtime",
+  "max_cycles": 1,
+  "shots": 10000,
+  "sampler": "runtime",
+  "runtime_block_name": "runtime-lassqd",
+  "transpile_target": "backend:ibm_torino",
+  "transpile_config": {"optimization_level": 3},
+  "sci_solver": "fulqrum",
+  "hpc_target": "slurm",
+  "watch_poll_interval": 30.0,
+  "timeouts": {"capture": 1800, "prepare": 3600, "solve": 7200, "replay": 1800}
+}

@@ -1,0 +1,10 @@
+{
+  "run_dir": "~/runs/lassqd-slurm",
+  "max_cycles": 3,
+  "sampler": "aer",
+  "transpile_target": "unmapped",
+  "sci_solver": "fulqrum",
+  "hpc_target": "slurm",
+  "watch_poll_interval": 10.0,
+  "timeouts": {"capture": 1800, "prepare": 1800, "solve": 7200, "replay": 1800}
+}

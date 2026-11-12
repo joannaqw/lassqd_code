@@ -1,0 +1,10 @@
+{
+  "run_dir": "~/runs/lassqd-local",
+  "max_cycles": 3,
+  "sampler": "aer",
+  "transpile_target": "unmapped",
+  "sci_solver": "fulqrum",
+  "hpc_target": "local",
+  "watch_poll_interval": 2.0,
+  "timeouts": {"capture": 1800, "prepare": 1800, "solve": 3600, "replay": 1800}
+}

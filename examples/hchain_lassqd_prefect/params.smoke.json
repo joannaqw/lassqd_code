@@ -1,0 +1,17 @@
+{
+  "run_dir": "~/runs/lassqd-smoke",
+  "max_cycles": 1,
+  "shots": 2000,
+  "sampler": "aer",
+  "transpile_target": "unmapped",
+  "sci_solver": "fulqrum",
+  "sqd": {
+    "max_iterations": 1,
+    "num_batches": 2,
+    "samples_per_batch": 30,
+    "max_dim": 40
+  },
+  "hpc_target": "local",
+  "watch_poll_interval": 2.0,
+  "timeouts": {"capture": 900, "prepare": 900, "solve": 1800, "replay": 900}
+}

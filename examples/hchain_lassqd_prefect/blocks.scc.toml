@@ -1,0 +1,46 @@
+# Prefect block configuration for the cluster this example was validated on
+# ("scc"): CPU partitions cpu-{debug,low,mid,high} of 5 nodes with 192 CPUs and
+# 772 GB each, Slurm accounting through slurmdbd, and no "module" command.
+#
+# python and worker_dir default to this example's own directory and its .venv,
+# so an unmodified checkout needs no edit here. Set them if the flow process and
+# the compute nodes see the example at different paths.
+hpc_target = "slurm"
+block_prefix = "lassqd"
+
+# This cluster does require an --account, and cpu-debug is restricted to the
+# "admin" account (scontrol show partition shows AllowAccounts per partition).
+# cpu-low takes any account and any QOS. An empty account would render no
+# #SBATCH --account at all, which here fails with "Invalid account or
+# account/partition combination specified".
+partition = "cpu-low"
+account = "general"
+# Profile-wide, because HPCProfileBlock.slurm_memory is not per-stage.
+memory = "64G"
+
+# Backend of the QiskitRuntimeConfig block, for sampler = "runtime". Comment it
+# out to skip that block; sampling with Aer needs no IBM account.
+runtime_backend = "ibm_torino"
+
+# Extra environment variables for every stage, on top of the thread counts and
+# the PySCF settings create_blocks.py derives. The job script exports nothing
+# else: QCSC's Slurm template has no module or profile step.
+[environments]
+
+[stages.capture]
+walltime = "00:30:00"
+ompthreads = 8
+
+[stages.prepare]
+walltime = "00:30:00"
+ompthreads = 8
+
+# The fragment solves carry the numerical cost, and are where a collective MPI
+# job would raise num_nodes.
+[stages.solve]
+walltime = "02:00:00"
+ompthreads = 16
+
+[stages.replay]
+walltime = "00:30:00"
+ompthreads = 8

@@ -1,0 +1,49 @@
+# Standalone project for this example: qcsc-prefect needs Python 3.11 or newer,
+# while the root project supports 3.10. Its uv.lock is committed here and is not
+# checked by the repository's CI.
+#
+# uv reads [tool.uv] settings from the project being resolved, not from a path
+# dependency, so the mrh source and the native build requirements below repeat
+# the root pyproject.toml's and must be kept in step with it.
+[project]
+name = "hchain-lassqd-prefect"
+version = "0.1.0"
+description = "Distributed LASSQD for an H20 chain with Prefect and QCSC on Slurm"
+requires-python = ">=3.11"
+dependencies = [
+    "lassqd[sim,ibm]",
+    "prefect>=3,<4",
+    "qcsc-prefect-blocks==0.3.1",
+    "qcsc-prefect-executor==0.3.1",
+    "qcsc-prefect-qiskit==0.3.1",
+]
+
+[dependency-groups]
+# Fulqrum is source-only and builds Cython extensions; --sci-solver pyscf uses
+# the SQD addon's solve_sci_batch instead and needs none of it.
+fulqrum = ["fulqrum>=0.4.5,<0.5"]
+
+[tool.uv.sources]
+lassqd = { path = "../..", editable = true }
+mrh = { path = "../../.deps/mrh", editable = true }
+
+[tool.uv.extra-build-dependencies]
+mrh = ["wheel", "cmake>=3.19,<4", "pyscf==2.14.0"]
+pyscf-forge = ["cmake>=3.19,<4", "pyscf==2.14.0"]
+
+[tool.ruff.lint.isort]
+# Every module here is imported by name: each worker runs as a script, so
+# Python puts this directory on sys.path[0].
+known-first-party = [
+    "block_names",
+    "create_blocks",
+    "flow",
+    "flow_params",
+    "layout",
+    "manifest",
+    "problem",
+    "sampling",
+    "serial",
+    "settings",
+    "sqd_settings",
+]
