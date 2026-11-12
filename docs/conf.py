@@ -38,7 +38,10 @@ intersphinx_mapping = {
     "scipy": ("https://docs.scipy.org/doc/scipy/", None),
     "h5py": ("https://docs.h5py.org/en/stable/", None),
     "qiskit": ("https://quantum.cloud.ibm.com/docs/api/qiskit/", None),
-    "qiskit-addon-sqd": ("https://quantum.cloud.ibm.com/docs/api/qiskit-addon-sqd/", None),
+    "qiskit-addon-sqd": (
+        "https://quantum.cloud.ibm.com/docs/api/qiskit-addon-sqd/",
+        None,
+    ),
 }
 
 html_theme = "qiskit-ecosystem"
