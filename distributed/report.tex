@@ -376,7 +376,11 @@ resources, and \code{HPCProfileBlock} for site configuration. Schedule capture,
 fragment preparation, and replay as classical HPC stages. For each collective
 fragment solve set \code{num_nodes} to $P_f$, \code{mpiprocs=1}, an MPI-capable
 launcher, and appropriate \code{ompthreads} and BLAS/OpenMP environment
-settings. Configure the site's launcher and placement options explicitly.
+settings. \code{ompthreads} renders only Slurm's \code{--cpus-per-task}, and
+the job script exports nothing but the profile's \code{environments}, so set
+\code{OMP_NUM_THREADS} and the BLAS equivalents there explicitly and keep them
+consistent with \code{ompthreads}. Configure the site's launcher and placement
+options explicitly.
 
 On Slurm, \code{num_nodes} and \code{mpiprocs} become \code{--nodes} and
 \code{--ntasks-per-node}, so the task count follows $P_f$. Leave
@@ -446,11 +450,32 @@ counts independently where useful.
   interrupted sampler call as ambiguous.
 \end{itemize}
 On the Slurm path the \code{Target} exists only on the compute node, so the
-preparation stage cannot compile for it. Instead it stores circuits whose
-native ffsim gates are decomposed into standard gates, for example with
-\code{ffsim.qiskit.PRE_INIT} as the pre-init stage of a generic pass manager,
-and leaves the device mapping to QRMI's transpiler. QRMI is therefore needed
-only where the site schedules QPU access through it.
+preparation stage cannot compile for it. QCSC therefore splits compilation
+between two application hooks, and the device mapping belongs to the
+application rather than to QRMI:
+\begin{itemize}
+  \item \code{prepare} runs on the workflow host and must leave a circuit that
+  QPY can carry to a node where ffsim is not installed, so it removes the
+  native ffsim gates without mapping onto a device. QCSC's own SQD workflow
+  runs \code{ffsim.qiskit.PRE_INIT} and then decomposes the remaining
+  \code{ffsim.*} operations in a bounded loop; a generic pass manager with
+  \code{PRE_INIT} as its pre-init stage and basis gates but no coupling map
+  should reach the same result through basis translation, which is worth
+  testing before relying on it.
+  \item \code{transpiler} is an importable \code{"module:function"} that QCSC
+  calls with \code{(circuit, target, config)} where the \code{Target} is
+  available: on the compute node for \code{scheduler="slurm"}, and in the
+  workflow process for \code{scheduler="iqp"}. Layout, routing and ISA
+  compilation all happen there, and QCSC validates the result against the
+  \code{Target}. \code{compile.py} supplies a preset-pass-manager default.
+\end{itemize}
+Only JSON crosses that boundary, so \code{config} holds portable preset
+options and \code{initial_layout} travels as a list of physical qubit indices;
+no \code{Target}, \code{Layout} or other Python object can. A workflow that
+compiles for the backend in its preparation stage should therefore keep that
+step in a function of the same three arguments, so adopting the Slurm path
+means naming it instead of calling it. QRMI is needed only where the site
+schedules QPU access through it.
 
 \textbf{Persist enough state to restart.}
 Requests identify the parent snapshot, fragment, Hamiltonian, basis, acquisition,
@@ -604,7 +629,11 @@ set through \code{QCSCSamplerV2}'s sampler options, but not through
 
 The scheduler state, the QCSC registry, and the Prefect task state are evidence
 about a job's execution. The \emph{result manifest} is the only evidence of
-its output. A manifest is \emph{valid} when:
+its output. The awaiting call yields that evidence rather than raising on it:
+\code{run_job_from_blocks} returns a result carrying the process
+\code{exit_status} and the final scheduler state, so a task that does not
+inspect both treats a failed job as a successful one. A manifest is
+\emph{valid} when:
 \begin{enumerate}
   \item it was published atomically by rank 0 as the job's final write (written
   to a temporary name, flushed, then linked into place without replacing an
@@ -990,12 +1019,26 @@ mrh change \\
 \end{longtable}}
 
 \section{Implementation outline}
+\label{sec:implementation}
 
 The serial library provides every stage and record the workflow needs
 (Section~\ref{sec:library}). What remains is an optional \code{lassqd.distributed} subpackage
 of this repository, with QCSC and MPI dependencies provided as extras. The
 inspected upstream libraries need no source changes; the optional mrh
 optimization is a separate follow-up.
+
+The subpackage splits into a numerical part and an orchestration part, which are
+at different stages. The collective \code{sci_solver} adapter below, and the
+durability layer of claim records, semantic manifest validation and
+reconciliation, are unimplemented. The orchestration itself has a worked
+reference at \path{examples/hchain_lassqd_prefect/} in this repository: the task
+graph of Section~\ref{sec:tasks}, the record-based stage boundary, QCSC
+block-driven submission with per-stage result manifests, and a serial reference
+that it reproduces bitwise. That example runs at $P_f = 1$, where the library's
+existing \code{prepare}/\code{run}/\code{finalize} split is already the
+per-fragment worker, so it establishes steps S2 and S5 of
+Section~\ref{sec:validation} on a Slurm target and leaves S3 and a non-trivial
+S4 to the adapter.
 
 The subpackage's numerical part is the collective \code{sci_solver} adapter,
 which wraps a local batch solver and is aware of the trim schedule:
@@ -1027,20 +1070,23 @@ must convert any exception into an MPI abort. Fulqrum's source notes that
 these checks will need to abort collectively once Fulqrum supports MPI.
 
 The rest of the subpackage is orchestration. It defines versioned request,
-claim, and manifest records that reference the library's HDF5 records and their
-digests. It also holds the Prefect flows, worker entry points, the QPU gateway,
-storage adapters, MPI resource profiles, reconciliation, and failure/retry
-handling. Co-installation with the inspected QCSC packages requires Python 3.11
-or newer; separate gateway and worker environments can communicate through the
-records. The MPI worker environment also needs \code{mpi4py} built for the
-site's MPI runtime. LASSQD requires \code{qiskit-addon-sqd>=0.14.0}, which
-adds trim SQD, subspace policies and solver-selected carryover to the MPI
-collective module of 0.13.1; confirm that the deployed revision behaves as
-described here. SQD's main branch, after 0.14.1, requires Python 3.11. QCSC's
-\code{QrmiRuntime} imports Prefect~3 modules, although the package declares
-\code{prefect>=2.19}. In QCSC~0.3.1, \code{qcsc-prefect-dice} pins
-\code{qiskit-addon-sqd==0.14.0}, and the new \code{qcsc-prefect-fulqrum}
-requires at least 0.14.0; both are compatible with LASSQD.
+claim, and manifest records that reference the library's HDF5 records and
+their digests. It also holds the Prefect flows, worker entry points, the QPU
+gateway, storage adapters, MPI resource profiles, reconciliation, and
+failure/retry handling. The example cited above implements the flows, the
+worker entry points, the QPU gateway and a size-and-digest manifest, and
+documents which of the remaining records and rules it omits. Co-installation
+with the inspected QCSC packages requires Python 3.11 or newer; separate
+gateway and worker environments can communicate through the records. The MPI
+worker environment also needs \code{mpi4py} built for the site's MPI runtime.
+LASSQD requires \code{qiskit-addon-sqd>=0.14.0}, which adds trim SQD, subspace
+policies and solver-selected carryover to the MPI collective module of 0.13.1;
+confirm that the deployed revision behaves as described here. SQD's main
+branch, after 0.14.1, requires Python 3.11. QCSC's \code{QrmiRuntime} imports
+Prefect~3 modules, although the package declares \code{prefect>=2.19}. In
+QCSC~0.3.1, \code{qcsc-prefect-dice} pins \code{qiskit-addon-sqd==0.14.0}, and
+the new \code{qcsc-prefect-fulqrum} requires at least 0.14.0; both are
+compatible with LASSQD.
 
 The new \code{qcsc-prefect-fulqrum} and \code{qcsc-prefect-sbd} packages run
 Fulqrum and SBD diagonalizations as separate scheduler jobs. Fulqrum's runs
@@ -1093,7 +1139,7 @@ S1 & Serial \code{run_lassqd} with \code{TrimPolicy} and the serial batch
 solver, in the notebook's configuration, instrumented to record traces. &
 Baseline. \\
 S2 & The stages as separate processes, each reading and writing the stored
-records. & Bitwise with S1. \\
+records, replaying the counts stored at S1. & Bitwise with S1. \\
 S3 & Collective adapter with local trim on one machine: 1 rank, then
 $P_f = B_f$ ranks, then a $P_f$ that does not divide $B_f$. & Identical
 screening batches, trimmed strings, merged subspaces, carryover strings, and
@@ -1108,6 +1154,17 @@ with S4. \\
 
 The 1-rank case of S3 also checks that the adapter's local trim selects the
 same strings as \code{TrimPolicy} does from full states.
+
+S2 and S5 replay stored counts because no record holds the sampler's
+random-generator state. Each fragment solver's stream lives in its own
+\code{SQDState}, but \code{run_lassqd} holds one sampler object whose stream
+advances across macrocycles and across the pubs of one job, and nothing
+persists it. A distributed workflow that samples afresh from a simulator
+therefore cannot reproduce a serial reference that did the same, unless both
+derive each macrocycle's sampler stream from the seed and the macrocycle index
+rather than from a live sampler object. Sampling on a QPU makes the question
+moot: the counts differ between jobs, and the stored \code{FragmentSamples} fix
+them for everything downstream.
 
 The library builds fragment problems from the alpha one-electron integrals
 \code{h1s[0]} and stops on the energy change between macrocycles; the
@@ -1236,8 +1293,11 @@ compare its energies, orbitals, and RDMs against that capture/replay reference.
 \section{Upstream source revisions}
 
 The design above is a proposal based on the following upstream releases.
-The collective adapter and the rest of \code{lassqd.distributed} have yet to
-be implemented and validated; MPI performance has not been measured here.
+The collective adapter and the durability layer of \code{lassqd.distributed}
+have yet to be implemented and validated, and MPI performance has not been
+measured here. The orchestration half has the worked $P_f = 1$ reference at
+\path{examples/hchain_lassqd_prefect/} described in
+Section~\ref{sec:implementation}.
 
 \begin{center}
 \small
