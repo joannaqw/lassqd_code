@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
       # Use the ruff version from uv.lock without syncing the project, which
       # would build mrh.
       - name: Lint
@@ -51,7 +51,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gfortran libblas-dev liblapack-dev
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
