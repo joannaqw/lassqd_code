@@ -1,5 +1,7 @@
 # LASSQD
 
+[![Tests](https://github.com/joannaqw/lassqd_code/actions/workflows/tests.yml/badge.svg)](https://github.com/joannaqw/lassqd_code/actions/workflows/tests.yml)
+
 Sample-based quantum diagonalization (SQD) as a fragment solver for the localized
 active space self-consistent field (LASSCF) method.
 

@@ -2,7 +2,6 @@ import subprocess
 import sys
 
 from conftest import full_counts
-
 from qiskit import QuantumCircuit
 
 from lassqd import (

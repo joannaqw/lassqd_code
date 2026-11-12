@@ -1,0 +1,62 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+      # Use the ruff version from uv.lock without syncing the project, which
+      # would build mrh.
+      - name: Lint
+        run: uvx ruff@0.16.9 check .
+      - name: Check formatting
+        run: uvx ruff@0.16.9 format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+    env:
+      OMP_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+    steps:
+      - uses: actions/checkout@v7
+      # pyproject.toml uses this checkout as the editable mrh source. mrh takes
+      # its version from setuptools-scm, so it needs the full history.
+      - uses: actions/checkout@v7
+        with:
+          repository: MatthewRHermes/mrh
+          ref: f007765830b62c83aef5839119732a63f5e463e0
+          path: .deps/mrh
+          fetch-depth: 0
+      - name: Install native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gfortran libblas-dev liblapack-dev
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      # Fulqrum, a source-only package, is used only by the tutorial notebook.
+      - name: Install dependencies
+        run: uv sync --locked --no-install-package fulqrum
+      - name: Run tests
+        run: uv run --no-sync python -m pytest
